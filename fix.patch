@@ -1,0 +1,579 @@
+diff --git a/lib/ContextModule.js b/lib/ContextModule.js
+index e7170d44b..abf8ed365 100644
+--- a/lib/ContextModule.js
++++ b/lib/ContextModule.js
+@@ -61,7 +61,7 @@ const makeSerializable = require("./util/makeSerializable");
+ 
+ /**
+  * @typedef {Object} ContextModuleOptionsExtras
+- * @property {string} resource
++ * @property {false|string|string[]} resource
+  * @property {string=} resourceQuery
+  * @property {string=} resourceFragment
+  * @property {TODO} resolveOptions
+@@ -92,23 +92,36 @@ class ContextModule extends Module {
+ 	 * @param {ContextModuleOptions} options options object
+ 	 */
+ 	constructor(resolveDependencies, options) {
+-		const parsed = parseResource(options ? options.resource : "");
+-		const resource = parsed.path;
+-		const resourceQuery = (options && options.resourceQuery) || parsed.query;
+-		const resourceFragment =
+-			(options && options.resourceFragment) || parsed.fragment;
+-
+-		super("javascript/dynamic", resource);
++		if (!options || typeof options.resource === "string") {
++			const parsed = parseResource(
++				options ? /** @type {string} */ (options.resource) : ""
++			);
++			const resource = parsed.path;
++			const resourceQuery = (options && options.resourceQuery) || parsed.query;
++			const resourceFragment =
++				(options && options.resourceFragment) || parsed.fragment;
++
++			super("javascript/dynamic", resource);
++			/** @type {ContextModuleOptions} */
++			this.options = {
++				...options,
++				resource,
++				resourceQuery,
++				resourceFragment
++			};
++		} else {
++			super("javascript/dynamic");
++			/** @type {ContextModuleOptions} */
++			this.options = {
++				...options,
++				resource: options.resource,
++				resourceQuery: options.resourceQuery || "",
++				resourceFragment: options.resourceFragment || ""
++			};
++		}
+ 
+ 		// Info from Factory
+ 		this.resolveDependencies = resolveDependencies;
+-		/** @type {ContextModuleOptions} */
+-		this.options = {
+-			...options,
+-			resource,
+-			resourceQuery,
+-			resourceFragment
+-		};
+ 		if (options && options.resolveOptions !== undefined) {
+ 			this.resolveOptions = options.resolveOptions;
+ 		}
+@@ -155,7 +168,12 @@ class ContextModule extends Module {
+ 	}
+ 
+ 	_createIdentifier() {
+-		let identifier = this.context;
++		let identifier =
++			this.context ||
++			(typeof this.options.resource === "string" ||
++			this.options.resource === false
++				? `${this.options.resource}`
++				: this.options.resource.join("|"));
+ 		if (this.options.resourceQuery) {
+ 			identifier += `|${this.options.resourceQuery}`;
+ 		}
+@@ -220,7 +238,19 @@ class ContextModule extends Module {
+ 	 * @returns {string} a user readable identifier of the module
+ 	 */
+ 	readableIdentifier(requestShortener) {
+-		let identifier = requestShortener.shorten(this.context) + "/";
++		let identifier;
++		if (this.context) {
++			identifier = requestShortener.shorten(this.context) + "/";
++		} else if (
++			typeof this.options.resource === "string" ||
++			this.options.resource === false
++		) {
++			identifier = requestShortener.shorten(`${this.options.resource}`) + "/";
++		} else {
++			identifier = this.options.resource
++				.map(r => requestShortener.shorten(r) + "/")
++				.join(" ");
++		}
+ 		if (this.options.resourceQuery) {
+ 			identifier += ` ${this.options.resourceQuery}`;
+ 		}
+@@ -270,11 +300,30 @@ class ContextModule extends Module {
+ 	 * @returns {string | null} an identifier for library inclusion
+ 	 */
+ 	libIdent(options) {
+-		let identifier = contextify(
+-			options.context,
+-			this.context,
+-			options.associatedObjectForCache
+-		);
++		let identifier;
++
++		if (this.context) {
++			identifier = contextify(
++				options.context,
++				this.context,
++				options.associatedObjectForCache
++			);
++		} else if (typeof this.options.resource === "string") {
++			identifier = contextify(
++				options.context,
++				this.options.resource,
++				options.associatedObjectForCache
++			);
++		} else if (this.options.resource === false) {
++			identifier = "false";
++		} else {
++			identifier = this.options.resource
++				.map(res =>
++					contextify(options.context, res, options.associatedObjectForCache)
++				)
++				.join(" ");
++		}
++
+ 		if (this.layer) identifier = `(${this.layer})/${identifier}`;
+ 		if (this.options.mode) {
+ 			identifier += ` ${this.options.mode}`;
+@@ -323,8 +372,9 @@ class ContextModule extends Module {
+ 		// build if enforced
+ 		if (this._forceBuild) return callback(null, true);
+ 
+-		// always build when we have no snapshot
+-		if (!this.buildInfo.snapshot) return callback(null, true);
++		// always build when we have no snapshot and context
++		if (!this.buildInfo.snapshot)
++			return callback(null, Boolean(this.context || this.options.resource));
+ 
+ 		fileSystemInfo.checkSnapshotValid(this.buildInfo.snapshot, (err, valid) => {
+ 			callback(err, !valid);
+@@ -439,10 +489,16 @@ class ContextModule extends Module {
+ 				);
+ 				return;
+ 			}
++			if (!this.context && !this.options.resource) return callback();
++
+ 			compilation.fileSystemInfo.createSnapshot(
+ 				startTime,
+ 				null,
+-				[this.context],
++				this.context
++					? [this.context]
++					: typeof this.options.resource === "string"
++					? [this.options.resource]
++					: /** @type {string[]} */ (this.options.resource),
+ 				null,
+ 				SNAPSHOT_OPTIONS,
+ 				(err, snapshot) => {
+@@ -466,7 +522,15 @@ class ContextModule extends Module {
+ 		missingDependencies,
+ 		buildDependencies
+ 	) {
+-		contextDependencies.add(this.context);
++		if (this.context) {
++			contextDependencies.add(this.context);
++		} else if (typeof this.options.resource === "string") {
++			contextDependencies.add(this.options.resource);
++		} else if (this.options.resource === false) {
++			return;
++		} else {
++			for (const res of this.options.resource) contextDependencies.add(res);
++		}
+ 	}
+ 
+ 	/**
+diff --git a/lib/ContextModuleFactory.js b/lib/ContextModuleFactory.js
+index f667e11f8..dac23100a 100644
+--- a/lib/ContextModuleFactory.js
++++ b/lib/ContextModuleFactory.js
+@@ -167,6 +167,9 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
+ 				asyncLib.parallel(
+ 					[
+ 						callback => {
++							const results = [];
++							const yield_ = obj => results.push(obj);
++
+ 							contextResolver.resolve(
+ 								{},
+ 								context,
+@@ -174,11 +177,12 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
+ 								{
+ 									fileDependencies,
+ 									missingDependencies,
+-									contextDependencies
++									contextDependencies,
++									yield: yield_
+ 								},
+-								(err, result) => {
++								err => {
+ 									if (err) return callback(err);
+-									callback(null, result);
++									callback(null, results);
+ 								}
+ 							);
+ 						},
+@@ -213,15 +217,25 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
+ 								contextDependencies
+ 							});
+ 						}
+-
++						let [contextResult, loaderResult] = result;
++						if (contextResult.length > 1) {
++							const first = contextResult[0];
++							contextResult = contextResult.filter(r => r.path);
++							if (contextResult.length === 0) contextResult.push(first);
++						}
+ 						this.hooks.afterResolve.callAsync(
+ 							{
+ 								addon:
+ 									loadersPrefix +
+-									result[1].join("!") +
+-									(result[1].length > 0 ? "!" : ""),
+-								resource: result[0],
++									loaderResult.join("!") +
++									(loaderResult.length > 0 ? "!" : ""),
++								resource:
++									contextResult.length > 1
++										? contextResult.map(r => r.path)
++										: contextResult[0].path,
+ 								resolveDependencies: this.resolveDependencies.bind(this),
++								resourceQuery: contextResult[0].query,
++								resourceFragment: contextResult[0].fragment,
+ 								...beforeResolveResult
+ 							},
+ 							(err, result) => {
+@@ -278,26 +292,28 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
+ 		} = options;
+ 		if (!regExp || !resource) return callback(null, []);
+ 
+-		const addDirectoryChecked = (directory, visited, callback) => {
++		let severalContexts = false;
++		const addDirectoryChecked = (ctx, directory, visited, callback) => {
+ 			fs.realpath(directory, (err, realPath) => {
+ 				if (err) return callback(err);
+ 				if (visited.has(realPath)) return callback(null, []);
+ 				let recursionStack;
+ 				addDirectory(
++					ctx,
+ 					directory,
+-					(dir, callback) => {
++					(_, dir, callback) => {
+ 						if (recursionStack === undefined) {
+ 							recursionStack = new Set(visited);
+ 							recursionStack.add(realPath);
+ 						}
+-						addDirectoryChecked(dir, recursionStack, callback);
++						addDirectoryChecked(ctx, dir, recursionStack, callback);
+ 					},
+ 					callback
+ 				);
+ 			});
+ 		};
+ 
+-		const addDirectory = (directory, addSubDirectory, callback) => {
++		const addDirectory = (ctx, directory, addSubDirectory, callback) => {
+ 			fs.readdir(directory, (err, files) => {
+ 				if (err) return callback(err);
+ 				const processedFiles = cmf.hooks.contextModuleFiles.call(
+@@ -324,16 +340,15 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
+ 
+ 								if (stat.isDirectory()) {
+ 									if (!recursive) return callback();
+-									addSubDirectory(subResource, callback);
++									addSubDirectory(ctx, subResource, callback);
+ 								} else if (
+ 									stat.isFile() &&
+ 									(!include || subResource.match(include))
+ 								) {
+ 									const obj = {
+-										context: resource,
++										context: ctx,
+ 										request:
+-											"." +
+-											subResource.substr(resource.length).replace(/\\/g, "/")
++											"." + subResource.substr(ctx.length).replace(/\\/g, "/")
+ 									};
+ 
+ 									this.hooks.alternativeRequests.callAsync(
+@@ -344,8 +359,11 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
+ 											alternatives = alternatives
+ 												.filter(obj => regExp.test(obj.request))
+ 												.map(obj => {
++													const request = severalContexts
++														? join(fs, obj.context, obj.request)
++														: obj.request;
+ 													const dep = new ContextElementDependency(
+-														obj.request + resourceQuery + resourceFragment,
++														request + resourceQuery + resourceFragment,
+ 														obj.request,
+ 														typePrefix,
+ 														category,
+@@ -382,12 +400,38 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
+ 			});
+ 		};
+ 
+-		if (typeof fs.realpath === "function") {
+-			addDirectoryChecked(resource, new Set(), callback);
++		const addSubDirectory = (ctx, dir, callback) =>
++			addDirectory(ctx, dir, addSubDirectory, callback);
++
++		const visitResource = (resource, callback) => {
++			if (typeof fs.realpath === "function") {
++				addDirectoryChecked(resource, resource, new Set(), callback);
++			} else {
++				addDirectory(resource, resource, addSubDirectory, callback);
++			}
++		};
++
++		if (typeof resource === "string") {
++			visitResource(resource, callback);
+ 		} else {
+-			const addSubDirectory = (dir, callback) =>
+-				addDirectory(dir, addSubDirectory, callback);
+-			addDirectory(resource, addSubDirectory, callback);
++			severalContexts = true;
++			asyncLib.map(resource, visitResource, (err, result) => {
++				if (err) return callback(err);
++
++				// result dependencies should have unique userRequest
++				// ordered by resolve result
++				const temp = new Set();
++				const res = [];
++				for (let i = 0; i < result.length; i++) {
++					const inner = result[i];
++					for (const el of inner) {
++						if (temp.has(el.userRequest)) continue;
++						res.push(el);
++						temp.add(el.userRequest);
++					}
++				}
++				callback(null, res);
++			});
+ 		}
+ 	}
+ };
+diff --git a/lib/cache/ResolverCachePlugin.js b/lib/cache/ResolverCachePlugin.js
+index a0c0bbccb..f53626b63 100644
+--- a/lib/cache/ResolverCachePlugin.js
++++ b/lib/cache/ResolverCachePlugin.js
+@@ -128,6 +128,13 @@ class ResolverCachePlugin {
+ 				fileDependencies: new LazySet(),
+ 				contextDependencies: new LazySet()
+ 			};
++			let yieldResult;
++			let withYield = false;
++			if (typeof newResolveContext.yield === "function") {
++				yieldResult = [];
++				withYield = true;
++				newResolveContext.yield = obj => yieldResult.push(obj);
++			}
+ 			const propagate = key => {
+ 				if (resolveContext[key]) {
+ 					addAllToSet(resolveContext[key], newResolveContext[key]);
+@@ -155,15 +162,22 @@ class ResolverCachePlugin {
+ 						snapshotOptions,
+ 						(err, snapshot) => {
+ 							if (err) return callback(err);
++							const resolveResult = withYield ? yieldResult : result;
++							// since we intercept resolve hook
++							// we still can get result in callback
++							if (withYield && result) yieldResult.push(result);
+ 							if (!snapshot) {
+-								if (result) return callback(null, result);
++								if (resolveResult) return callback(null, resolveResult);
+ 								return callback();
+ 							}
+-							itemCache.store(new CacheEntry(result, snapshot), storeErr => {
+-								if (storeErr) return callback(storeErr);
+-								if (result) return callback(null, result);
+-								callback();
+-							});
++							itemCache.store(
++								new CacheEntry(resolveResult, snapshot),
++								storeErr => {
++									if (storeErr) return callback(storeErr);
++									if (resolveResult) return callback(null, resolveResult);
++									callback();
++								}
++							);
+ 						}
+ 					);
+ 				}
+@@ -173,6 +187,8 @@ class ResolverCachePlugin {
+ 			factory(type, hook) {
+ 				/** @type {Map<string, (function(Error=, Object=): void)[]>} */
+ 				const activeRequests = new Map();
++				/** @type {Map<string, [function(Error=, Object=): void, function(Error=, Object=): void][]>} */
++				const activeRequestsWithYield = new Map();
+ 				hook.tap(
+ 					"ResolverCachePlugin",
+ 					/**
+@@ -197,29 +213,67 @@ class ResolverCachePlugin {
+ 								if (request._ResolverCachePluginCacheMiss || !fileSystemInfo) {
+ 									return callback();
+ 								}
+-								const identifier = `${type}${optionsIdent}${objectToString(
+-									request,
+-									!cacheWithContext
+-								)}`;
+-								const activeRequest = activeRequests.get(identifier);
+-								if (activeRequest) {
+-									activeRequest.push(callback);
+-									return;
++								const withYield = typeof resolveContext.yield === "function";
++								const identifier = `${type}${
++									withYield ? "|yield" : "|default"
++								}${optionsIdent}${objectToString(request, !cacheWithContext)}`;
++
++								if (withYield) {
++									const activeRequest = activeRequestsWithYield.get(identifier);
++									if (activeRequest) {
++										activeRequest[0].push(callback);
++										activeRequest[1].push(resolveContext.yield);
++										return;
++									}
++								} else {
++									const activeRequest = activeRequests.get(identifier);
++									if (activeRequest) {
++										activeRequest.push(callback);
++										return;
++									}
+ 								}
+ 								const itemCache = cache.getItemCache(identifier, null);
+-								let callbacks;
+-								const done = (err, result) => {
+-									if (callbacks === undefined) {
+-										callback(err, result);
+-										callbacks = false;
+-									} else {
+-										for (const callback of callbacks) {
+-											callback(err, result);
+-										}
+-										activeRequests.delete(identifier);
+-										callbacks = false;
+-									}
+-								};
++								let callbacks, yields;
++								const done = withYield
++									? (err, result) => {
++											if (callbacks === undefined) {
++												if (err) {
++													callback(err);
++												} else {
++													if (result)
++														for (const r of result) resolveContext.yield(r);
++													callback(null, null);
++												}
++												yields = undefined;
++												callbacks = false;
++											} else {
++												if (err) {
++													for (const cb of callbacks) cb(err);
++												} else {
++													for (let i = 0; i < callbacks.length; i++) {
++														const cb = callbacks[i];
++														const yield_ = yields[i];
++														if (result) for (const r of result) yield_(r);
++														cb(null, null);
++													}
++												}
++												activeRequestsWithYield.delete(identifier);
++												yields = undefined;
++												callbacks = false;
++											}
++									  }
++									: (err, result) => {
++											if (callbacks === undefined) {
++												callback(err, result);
++												callbacks = false;
++											} else {
++												for (const callback of callbacks) {
++													callback(err, result);
++												}
++												activeRequests.delete(identifier);
++												callbacks = false;
++											}
++									  };
+ 								/**
+ 								 * @param {Error=} err error if any
+ 								 * @param {CacheEntry=} cacheEntry cache entry
+@@ -276,7 +330,14 @@ class ResolverCachePlugin {
+ 									}
+ 								};
+ 								itemCache.get(processCacheResult);
+-								if (callbacks === undefined) {
++								if (withYield && callbacks === undefined) {
++									callbacks = [callback];
++									yields = [resolveContext.yield];
++									activeRequestsWithYield.set(
++										identifier,
++										/** @type {[any, any]} */ ([callbacks, yields])
++									);
++								} else if (callbacks === undefined) {
+ 									callbacks = [callback];
+ 									activeRequests.set(identifier, callbacks);
+ 								}
+diff --git a/package.json b/package.json
+index 9729347d1..175e1e62f 100644
+--- a/package.json
++++ b/package.json
+@@ -14,7 +14,7 @@
+     "acorn-import-assertions": "^1.7.6",
+     "browserslist": "^4.14.5",
+     "chrome-trace-event": "^1.0.2",
+-    "enhanced-resolve": "^5.8.3",
++    "enhanced-resolve": "^5.9.2",
+     "es-module-lexer": "^0.9.0",
+     "eslint-scope": "5.1.1",
+     "events": "^3.2.0",
+diff --git a/types.d.ts b/types.d.ts
+index 5545711b3..dce5a659b 100644
+--- a/types.d.ts
++++ b/types.d.ts
+@@ -2526,7 +2526,7 @@ declare interface ContextModuleOptions {
+ 	 * exports referenced from modules (won't be mangled)
+ 	 */
+ 	referencedExports?: string[][];
+-	resource: string;
++	resource: string | false | string[];
+ 	resourceQuery?: string;
+ 	resourceFragment?: string;
+ 	resolveOptions: any;
+@@ -9479,6 +9479,11 @@ declare interface ResolveContext {
+ 	 * log function
+ 	 */
+ 	log?: (arg0: string) => void;
++
++	/**
++	 * yield result, if provided plugins can return several results
++	 */
++	yield?: (arg0: ResolveRequest) => void;
+ }
+ declare interface ResolveData {
+ 	contextInfo: ModuleFactoryCreateDataContextInfo;
+@@ -11925,7 +11930,7 @@ declare interface UserResolveOptions {
+ 	restrictions?: (string | RegExp)[];
+ 
+ 	/**
+-	 * Use only the sync constiants of the file system calls
++	 * Use only the sync constraints of the file system calls
+ 	 */
+ 	useSyncFileSystemCalls?: boolean;
+ 
+diff --git a/yarn.lock b/yarn.lock
+index eeb0c5ee7..7a7f95926 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -2259,10 +2259,10 @@ enhanced-resolve@^4.0.0:
+     memory-fs "^0.5.0"
+     tapable "^1.0.0"
+ 
+-enhanced-resolve@^5.8.3:
+-  version "5.8.3"
+-  resolved "https://registry.yarnpkg.com/enhanced-resolve/-/enhanced-resolve-5.8.3.tgz#6d552d465cce0423f5b3d718511ea53826a7b2f0"
+-  integrity sha512-EGAbGvH7j7Xt2nc0E7D99La1OiEs8LnyimkRgwExpUMScN6O+3x9tIWs7PLQZVNx4YD+00skHXPXi1yQHpAmZA==
++enhanced-resolve@^5.9.2:
++  version "5.9.2"
++  resolved "https://registry.yarnpkg.com/enhanced-resolve/-/enhanced-resolve-5.9.2.tgz#0224dcd6a43389ebfb2d55efee517e5466772dd9"
++  integrity sha512-GIm3fQfwLJ8YZx2smuHpBKkXC1yOk+OBEmKckVyL0i/ea8mqDEykK3ld5dgH1QYPNyT/lIllxV2LULnxCHaHkA==
+   dependencies:
+     graceful-fs "^4.2.4"
+     tapable "^2.2.0"
