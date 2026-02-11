@@ -1,0 +1,769 @@
+diff --git a/test/ConfigTestCases_oracle.basictest.js b/test/ConfigTestCases_oracle.basictest.js
+new file mode 100644
+index 000000000..8c8e0933c
+--- /dev/null
++++ b/test/ConfigTestCases_oracle.basictest.js
+@@ -0,0 +1,5 @@
++const { describeCases } = require("./ConfigTestCases.template");
++
++describeCases({
++	name: "ConfigTestCases"
++});
+diff --git a/test/ContextModule.unittest_oracle.js b/test/ContextModule.unittest_oracle.js
+new file mode 100644
+index 000000000..ae3ab3503
+--- /dev/null
++++ b/test/ContextModule.unittest_oracle.js
+@@ -0,0 +1,25 @@
++"use strict";
++
++const ContextModule = require("../lib/ContextModule");
++
++describe("contextModule", () => {
++	let contextModule;
++	let request;
++	beforeEach(() => {
++		request = "/some/request";
++	});
++	describe("#identifier", () => {
++		it("returns an safe identifier for this module", () => {
++			contextModule = new ContextModule(() => {}, {
++				type: "javascript/auto",
++				request,
++				resource: "a",
++				mode: "lazy",
++				regExp: /a|b/
++			});
++			expect(contextModule.identifier()).toEqual(
++				expect.stringContaining("/a%7Cb/")
++			);
++		});
++	});
++});
+diff --git a/test/ContextModuleFactory.unittest_oracle.js b/test/ContextModuleFactory.unittest_oracle.js
+new file mode 100644
+index 000000000..1f89e611d
+--- /dev/null
++++ b/test/ContextModuleFactory.unittest_oracle.js
+@@ -0,0 +1,160 @@
++"use strict";
++
++const { createFsFromVolume, Volume } = require("memfs");
++const ContextModuleFactory = require("../lib/ContextModuleFactory");
++
++describe("ContextModuleFactory", () => {
++	describe("resolveDependencies", () => {
++		let factory, memfs;
++		beforeEach(() => {
++			factory = new ContextModuleFactory([]);
++			memfs = createFsFromVolume(new Volume());
++		});
++		it("should not report an error when ENOENT errors happen", done => {
++			memfs.readdir = (dir, callback) => {
++				setTimeout(() => callback(null, ["/file"]));
++			};
++			memfs.stat = (file, callback) => {
++				let err = new Error("fake ENOENT error");
++				err.code = "ENOENT";
++				setTimeout(() => callback(err, null));
++			};
++			factory.resolveDependencies(
++				memfs,
++				{
++					resource: "/",
++					recursive: true,
++					regExp: /.*/
++				},
++				(err, res) => {
++					expect(err).toBeFalsy();
++					expect(Array.isArray(res)).toBe(true);
++					expect(res.length).toBe(0);
++					done();
++				}
++			);
++		});
++		it("should report an error when non-ENOENT errors happen", done => {
++			memfs.readdir = (dir, callback) => {
++				setTimeout(() => callback(null, ["/file"]));
++			};
++			memfs.stat = (file, callback) => {
++				let err = new Error("fake EACCES error");
++				err.code = "EACCES";
++				setTimeout(() => callback(err, null));
++			};
++			factory.resolveDependencies(
++				memfs,
++				{
++					resource: "/",
++					recursive: true,
++					regExp: /.*/
++				},
++				(err, res) => {
++					expect(err).toBeInstanceOf(Error);
++					expect(res).toBeFalsy();
++					done();
++				}
++			);
++		});
++		it("should return callback with [] if circular symlinks exist", done => {
++			let statDirStatus = 0;
++			memfs.readdir = (dir, callback) => {
++				statDirStatus++;
++				setTimeout(() => callback(null, ["/A"]));
++			};
++			memfs.stat = (file, callback) => {
++				const resolvedValue = {
++					isDirectory: () => statDirStatus === 1,
++					isFile: () => statDirStatus !== 1
++				};
++				setTimeout(() => callback(null, resolvedValue));
++			};
++			memfs.realpath = (dir, callback) => {
++				const realPath = dir.split("/");
++				setTimeout(() => callback(null, realPath[realPath.length - 1]));
++			};
++			factory.resolveDependencies(
++				memfs,
++				{
++					resource: "/A",
++					recursive: true,
++					regExp: /.*/
++				},
++				(err, res) => {
++					expect(res).toStrictEqual([]);
++					done();
++				}
++			);
++		});
++		it("should not return callback with [] if there are no circular symlinks", done => {
++			let statDirStatus = 0;
++			memfs.readdir = (dir, callback) => {
++				statDirStatus++;
++				setTimeout(() => callback(null, ["/B"]));
++			};
++			memfs.stat = (file, callback) => {
++				const resolvedValue = {
++					isDirectory: () => statDirStatus === 1,
++					isFile: () => statDirStatus !== 1
++				};
++				setTimeout(() => callback(null, resolvedValue));
++			};
++			memfs.realpath = (dir, callback) => {
++				const realPath = dir.split("/");
++				setTimeout(() => callback(null, realPath[realPath.length - 1]));
++			};
++			factory.resolveDependencies(
++				memfs,
++				{
++					resource: "/A",
++					recursive: true,
++					regExp: /.*/
++				},
++				(err, res) => {
++					expect(res).not.toStrictEqual([]);
++					expect(Array.isArray(res)).toBe(true);
++					expect(res.length).toBe(1);
++					done();
++				}
++			);
++		});
++
++		it("should resolve correctly several resources", done => {
++			memfs.readdir = (dir, callback) => {
++				if (dir === "/a") setTimeout(() => callback(null, ["/B"]));
++				if (dir === "/b") setTimeout(() => callback(null, ["/A"]));
++				if (dir === "/a/B") setTimeout(() => callback(null, ["a"]));
++				if (dir === "/b/A") setTimeout(() => callback(null, ["b"]));
++			};
++			memfs.stat = (file, callback) => {
++				const resolvedValue = {
++					isDirectory: () => file !== "/a/B/a" && file !== "/b/A/b",
++					isFile: () => file === "/a/B/a" || file === "/b/A/b"
++				};
++				setTimeout(() => callback(null, resolvedValue));
++			};
++			memfs.realpath = undefined;
++			factory.resolveDependencies(
++				memfs,
++				{
++					resource: ["/a", "/b"],
++					resourceFragment: "#hash",
++					resourceQuery: "?query",
++					recursive: true,
++					regExp: /.*/
++				},
++				(err, res) => {
++					expect(res).not.toStrictEqual([]);
++					expect(Array.isArray(res)).toBe(true);
++					expect(res.map(r => r.request)).toEqual([
++						"/a/B/a?query#hash",
++						"/b/A/b?query#hash"
++					]);
++					expect(res.map(r => r.userRequest)).toEqual(["./B/a", "./A/b"]);
++					done();
++				}
++			);
++		});
++	});
++});
+diff --git a/test/StatsTestCases_oracle.basictest.js b/test/StatsTestCases_oracle.basictest.js
+new file mode 100644
+index 000000000..1800ad70e
+--- /dev/null
++++ b/test/StatsTestCases_oracle.basictest.js
+@@ -0,0 +1,201 @@
++"use strict";
++
++require("./helpers/warmup-webpack");
++const path = require("path");
++const fs = require("graceful-fs");
++const rimraf = require("rimraf");
++const captureStdio = require("./helpers/captureStdio");
++const webpack = require("..");
++
++/**
++ * Escapes regular expression metacharacters
++ * @param {string} str String to quote
++ * @returns {string} Escaped string
++ */
++const quoteMeta = str => {
++	return str.replace(/[-[\]\\/{}()*+?.^$|]/g, "\\$&");
++};
++
++const base = path.join(__dirname, "statsCases");
++const outputBase = path.join(__dirname, "js", "stats");
++const tests = fs
++	.readdirSync(base)
++	.filter(
++		testName =>
++			fs.existsSync(path.join(base, testName, "index.js")) ||
++			fs.existsSync(path.join(base, testName, "webpack.config.js"))
++	)
++	.filter(testName => {
++		const testDirectory = path.join(base, testName);
++		const filterPath = path.join(testDirectory, "test.filter.js");
++		if (fs.existsSync(filterPath) && !require(filterPath)()) {
++			describe.skip(testName, () => it("filtered"));
++			return false;
++		}
++		return true;
++	});
++
++describe("StatsTestCases", () => {
++	jest.setTimeout(30000);
++	let stderr;
++	beforeEach(() => {
++		stderr = captureStdio(process.stderr, true);
++	});
++	afterEach(() => {
++		stderr.restore();
++	});
++	tests.forEach(testName => {
++		it("should print correct stats for " + testName, done => {
++			const outputDirectory = path.join(outputBase, testName);
++			rimraf.sync(outputDirectory);
++			fs.mkdirSync(outputDirectory, { recursive: true });
++			let options = {
++				mode: "development",
++				entry: "./index",
++				output: {
++					filename: "bundle.js"
++				}
++			};
++			if (fs.existsSync(path.join(base, testName, "webpack.config.js"))) {
++				options = require(path.join(base, testName, "webpack.config.js"));
++			}
++			let testConfig = {};
++			try {
++				// try to load a test file
++				testConfig = Object.assign(
++					testConfig,
++					require(path.join(base, testName, "test.config.js"))
++				);
++			} catch (e) {
++				// ignored
++			}
++
++			(Array.isArray(options) ? options : [options]).forEach(options => {
++				if (!options.context) options.context = path.join(base, testName);
++				if (!options.output) options.output = options.output || {};
++				if (!options.output.path) options.output.path = outputDirectory;
++				if (!options.plugins) options.plugins = [];
++				if (!options.optimization) options.optimization = {};
++				if (options.optimization.minimize === undefined)
++					options.optimization.minimize = false;
++			});
++			const c = webpack(options);
++			const compilers = c.compilers ? c.compilers : [c];
++			compilers.forEach(c => {
++				const ifs = c.inputFileSystem;
++				c.inputFileSystem = Object.create(ifs);
++				c.inputFileSystem.readFile = function () {
++					const args = Array.prototype.slice.call(arguments);
++					const callback = args.pop();
++					ifs.readFile.apply(
++						ifs,
++						args.concat([
++							(err, result) => {
++								if (err) return callback(err);
++								if (!/\.(js|json|txt)$/.test(args[0]))
++									return callback(null, result);
++								callback(null, result.toString("utf-8").replace(/\r/g, ""));
++							}
++						])
++					);
++				};
++				c.hooks.compilation.tap("StatsTestCasesTest", compilation => {
++					[
++						"optimize",
++						"optimizeModules",
++						"optimizeChunks",
++						"afterOptimizeTree",
++						"afterOptimizeAssets",
++						"beforeHash"
++					].forEach(hook => {
++						compilation.hooks[hook].tap("TestCasesTest", () =>
++							compilation.checkConstraints()
++						);
++					});
++				});
++			});
++			c.run((err, stats) => {
++				if (err) return done(err);
++				for (const compilation of []
++					.concat(stats.stats || stats)
++					.map(s => s.compilation)) {
++					compilation.logging.delete("webpack.Compilation.ModuleProfile");
++				}
++				if (/error$/.test(testName)) {
++					expect(stats.hasErrors()).toBe(true);
++				} else if (stats.hasErrors()) {
++					return done(
++						new Error(
++							stats.toString({
++								all: false,
++								errors: true,
++								errorStack: true,
++								errorDetails: true
++							})
++						)
++					);
++				} else {
++					fs.writeFileSync(
++						path.join(outputBase, testName, "stats.txt"),
++						stats.toString({
++							preset: "verbose",
++							context: path.join(base, testName),
++							colors: false
++						}),
++						"utf-8"
++					);
++				}
++				let toStringOptions = {
++					context: path.join(base, testName),
++					colors: false
++				};
++				let hasColorSetting = false;
++				if (typeof c.options.stats !== "undefined") {
++					toStringOptions = c.options.stats;
++					if (toStringOptions === null || typeof toStringOptions !== "object")
++						toStringOptions = { preset: toStringOptions };
++					if (!toStringOptions.context)
++						toStringOptions.context = path.join(base, testName);
++					hasColorSetting = typeof toStringOptions.colors !== "undefined";
++				}
++				if (Array.isArray(c.options) && !toStringOptions.children) {
++					toStringOptions.children = c.options.map(o => o.stats);
++				}
++				// mock timestamps
++				for (const { compilation: s } of [].concat(stats.stats || stats)) {
++					expect(s.startTime).toBeGreaterThan(0);
++					expect(s.endTime).toBeGreaterThan(0);
++					s.endTime = new Date("04/20/1970, 12:42:42 PM").getTime();
++					s.startTime = s.endTime - 1234;
++				}
++				let actual = stats.toString(toStringOptions);
++				expect(typeof actual).toBe("string");
++				if (!hasColorSetting) {
++					actual = stderr.toString() + actual;
++					actual = actual
++						.replace(/\u001b\[[0-9;]*m/g, "")
++						.replace(/[.0-9]+(\s?ms)/g, "X$1");
++				} else {
++					actual = stderr.toStringRaw() + actual;
++					actual = actual
++						.replace(/\u001b\[1m\u001b\[([0-9;]*)m/g, "<CLR=$1,BOLD>")
++						.replace(/\u001b\[1m/g, "<CLR=BOLD>")
++						.replace(/\u001b\[39m\u001b\[22m/g, "</CLR>")
++						.replace(/\u001b\[([0-9;]*)m/g, "<CLR=$1>")
++						.replace(/[.0-9]+(<\/CLR>)?(\s?ms)/g, "X$1$2");
++				}
++				// cspell:ignore Xdir
++				const testPath = path.join(base, testName);
++				actual = actual
++					.replace(/\r\n?/g, "\n")
++					.replace(/webpack [^ )]+(\)?) compiled/g, "webpack x.x.x$1 compiled")
++					.replace(new RegExp(quoteMeta(testPath), "g"), "Xdir/" + testName)
++					.replace(/(\w)\\(\w)/g, "$1/$2")
++					.replace(/, additional resolving: X ms/g, "");
++				expect(actual).toMatchSnapshot();
++				if (testConfig.validate) testConfig.validate(stats, stderr.toString());
++				done();
++			});
++		});
++	});
++});
+diff --git a/test/TestCasesNormal_oracle.basictest.js b/test/TestCasesNormal_oracle.basictest.js
+new file mode 100644
+index 000000000..9d975ad28
+--- /dev/null
++++ b/test/TestCasesNormal_oracle.basictest.js
+@@ -0,0 +1,7 @@
++const { describeCases } = require("./TestCases.template");
++
++describe("TestCases", () => {
++	describeCases({
++		name: "normal"
++	});
++});
+diff --git a/test/WatchTestCases_oracle.longtest.js b/test/WatchTestCases_oracle.longtest.js
+new file mode 100644
+index 000000000..14de99b42
+--- /dev/null
++++ b/test/WatchTestCases_oracle.longtest.js
+@@ -0,0 +1,5 @@
++const { describeCases } = require("./WatchTestCases.template");
++
++describeCases({
++	name: "WatchTestCases"
++});
+diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/a.js b/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/a.js
+new file mode 100644
+index 000000000..e94fef185
+--- /dev/null
++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/a.js
+@@ -0,0 +1 @@
++export default "a";
+diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/package.json b/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/package.json
+new file mode 100644
+index 000000000..2f5d9e490
+--- /dev/null
++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/package.json
+@@ -0,0 +1,5 @@
++{
++  "name": "foo",
++  "version": "1.0.0",
++  "module": "./a.js"
++}
+diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/b.js b/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/b.js
+new file mode 100644
+index 000000000..eff703ff4
+--- /dev/null
++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/b.js
+@@ -0,0 +1 @@
++export default "b";
+diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/package.json b/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/package.json
+new file mode 100644
+index 000000000..3a389fbe8
+--- /dev/null
++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/package.json
+@@ -0,0 +1,5 @@
++{
++  "name": "foo",
++  "version": "1.0.0",
++  "module": "./b.js"
++}
+diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/index.js b/test/configCases/resolve/context-resolve-with-ignore_oracle/index.js
+new file mode 100644
+index 000000000..11b5574fb
+--- /dev/null
++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/index.js
+@@ -0,0 +1,7 @@
++const a = String.fromCharCode("a".charCodeAt(0));
++const b = String.fromCharCode("b".charCodeAt(0));
++
++it("should compile correctly", async () => {
++	expect((await /* webpackMode: "lazy" */ import(`foo/${a}`)).default).toEqual({});
++	expect((await /* webpackMode: "lazy" */ import(`foo/${b}`)).default).toBe("b");
++});
+diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/webpack.config.js b/test/configCases/resolve/context-resolve-with-ignore_oracle/webpack.config.js
+new file mode 100644
+index 000000000..24884ab1c
+--- /dev/null
++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/webpack.config.js
+@@ -0,0 +1,11 @@
++const path = require("path");
++
++/** @type {import("../../../../").Configuration} */
++module.exports = {
++	resolve: {
++		modules: [path.resolve(__dirname, "a"), path.resolve(__dirname, "b")],
++		alias: {
++			[path.resolve(__dirname, "a", "foo")]: false
++		}
++	}
++};
+diff --git a/test/configCases/resolve/empty-context-module_oracle/index.js b/test/configCases/resolve/empty-context-module_oracle/index.js
+new file mode 100644
+index 000000000..289942993
+--- /dev/null
++++ b/test/configCases/resolve/empty-context-module_oracle/index.js
+@@ -0,0 +1,7 @@
++const id = () => Math.random();
++
++it("should compile", async () => {
++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
++});
+diff --git a/test/configCases/resolve/empty-context-module_oracle/webpack.config.js b/test/configCases/resolve/empty-context-module_oracle/webpack.config.js
+new file mode 100644
+index 000000000..bfefc9c73
+--- /dev/null
++++ b/test/configCases/resolve/empty-context-module_oracle/webpack.config.js
+@@ -0,0 +1,20 @@
++/** @type {import("../../../../").Configuration[]} */
++module.exports = [
++	{
++		cache: true,
++		resolve: {
++			alias: {
++				foo: false
++			},
++			unsafeCache: true
++		}
++	},
++	{
++		resolve: {
++			alias: {
++				foo: false
++			},
++			unsafeCache: true
++		}
++	}
++];
+diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/index.js b/test/configCases/resolve/issue-11335-context-module_oracle/index.js
+new file mode 100644
+index 000000000..d4784570e
+--- /dev/null
++++ b/test/configCases/resolve/issue-11335-context-module_oracle/index.js
+@@ -0,0 +1,18 @@
++import a from "app/widgets/a";
++import b from "app/widgets/b";
++import c from "app/widgets/c";
++
++
++it("static imports order", () => {
++	expect(a).toBe("main/widgets/a");
++	expect(b).toBe("main/widgets/b");
++	expect(c).toBe("foo/widgets/c");
++});
++
++const load = id => import(/* webpackMode: "eager" */ `app/widgets/${id}?query#hash`);
++
++it("dynamic imports order", async () => {
++	expect((await load("a")).default).toBe("main/widgets/a");
++	expect((await load("b")).default).toBe("main/widgets/b");
++	expect((await load("c")).default).toBe("foo/widgets/c");
++});
+diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/b.js b/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/b.js
+new file mode 100644
+index 000000000..9b6f29749
+--- /dev/null
++++ b/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/b.js
+@@ -0,0 +1 @@
++export default "foo/widgets/b";
+diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/c.js b/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/c.js
+new file mode 100644
+index 000000000..0de4d4fb7
+--- /dev/null
++++ b/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/c.js
+@@ -0,0 +1 @@
++export default "foo/widgets/c";
+diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/a.js b/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/a.js
+new file mode 100644
+index 000000000..b6d0dbb44
+--- /dev/null
++++ b/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/a.js
+@@ -0,0 +1 @@
++export default "main/widgets/a";
+diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/b.js b/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/b.js
+new file mode 100644
+index 000000000..0b8fa8212
+--- /dev/null
++++ b/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/b.js
+@@ -0,0 +1 @@
++export default "main/widgets/b";
+diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/webpack.config.js b/test/configCases/resolve/issue-11335-context-module_oracle/webpack.config.js
+new file mode 100644
+index 000000000..d1c50dcaa
+--- /dev/null
++++ b/test/configCases/resolve/issue-11335-context-module_oracle/webpack.config.js
+@@ -0,0 +1,10 @@
++const path = require("path");
++
++/** @type {import("../../../../").Configuration} */
++module.exports = {
++	resolve: {
++		alias: {
++			app: [path.join(__dirname, "src/main"), path.join(__dirname, "src/foo")]
++		}
++	}
++};
+diff --git a/test/statsCases/context-independence_oracle/a/c/a.js b/test/statsCases/context-independence_oracle/a/c/a.js
+new file mode 100644
+index 000000000..842e368a0
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/a/c/a.js
+@@ -0,0 +1 @@
++export default 2;
+diff --git a/test/statsCases/context-independence_oracle/a/cc/b.js b/test/statsCases/context-independence_oracle/a/cc/b.js
+new file mode 100644
+index 000000000..aef22247d
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/a/cc/b.js
+@@ -0,0 +1 @@
++export default 1;
+diff --git a/test/statsCases/context-independence_oracle/a/chunk.js b/test/statsCases/context-independence_oracle/a/chunk.js
+new file mode 100644
+index 000000000..a1aa81e2f
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/a/chunk.js
+@@ -0,0 +1,2 @@
++import test from "./module";
++console.log(test);
+diff --git a/test/statsCases/context-independence_oracle/a/index.js b/test/statsCases/context-independence_oracle/a/index.js
+new file mode 100644
+index 000000000..82c137c9a
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/a/index.js
+@@ -0,0 +1,4 @@
++console.log("test");
++import("./chunk");
++const module = Math.round(Math.random() * 100) % 2 === 0 ? "a" : "b";
++import(/* webpackMode: "eager" */`c/${module}`).then(({ default: d }) => console.log(d));
+diff --git a/test/statsCases/context-independence_oracle/a/module.js b/test/statsCases/context-independence_oracle/a/module.js
+new file mode 100644
+index 000000000..7a4e8a723
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/a/module.js
+@@ -0,0 +1 @@
++export default 42;
+diff --git a/test/statsCases/context-independence_oracle/b/c/a.js b/test/statsCases/context-independence_oracle/b/c/a.js
+new file mode 100644
+index 000000000..842e368a0
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/b/c/a.js
+@@ -0,0 +1 @@
++export default 2;
+diff --git a/test/statsCases/context-independence_oracle/b/cc/b.js b/test/statsCases/context-independence_oracle/b/cc/b.js
+new file mode 100644
+index 000000000..aef22247d
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/b/cc/b.js
+@@ -0,0 +1 @@
++export default 1;
+diff --git a/test/statsCases/context-independence_oracle/b/chunk.js b/test/statsCases/context-independence_oracle/b/chunk.js
+new file mode 100644
+index 000000000..a1aa81e2f
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/b/chunk.js
+@@ -0,0 +1,2 @@
++import test from "./module";
++console.log(test);
+diff --git a/test/statsCases/context-independence_oracle/b/index.js b/test/statsCases/context-independence_oracle/b/index.js
+new file mode 100644
+index 000000000..82c137c9a
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/b/index.js
+@@ -0,0 +1,4 @@
++console.log("test");
++import("./chunk");
++const module = Math.round(Math.random() * 100) % 2 === 0 ? "a" : "b";
++import(/* webpackMode: "eager" */`c/${module}`).then(({ default: d }) => console.log(d));
+diff --git a/test/statsCases/context-independence_oracle/b/module.js b/test/statsCases/context-independence_oracle/b/module.js
+new file mode 100644
+index 000000000..7a4e8a723
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/b/module.js
+@@ -0,0 +1 @@
++export default 42;
+diff --git a/test/statsCases/context-independence_oracle/test.config.js b/test/statsCases/context-independence_oracle/test.config.js
+new file mode 100644
+index 000000000..305c9bb31
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/test.config.js
+@@ -0,0 +1,9 @@
++module.exports = {
++	validate(stats) {
++		for (let i = 0; i < stats.stats.length; i += 2) {
++			const a = stats.stats[i].compilation.hash;
++			const b = stats.stats[i + 1].compilation.hash;
++			expect(a).toBe(b);
++		}
++	}
++};
+diff --git a/test/statsCases/context-independence_oracle/webpack.config.js b/test/statsCases/context-independence_oracle/webpack.config.js
+new file mode 100644
+index 000000000..98b51ca0e
+--- /dev/null
++++ b/test/statsCases/context-independence_oracle/webpack.config.js
+@@ -0,0 +1,58 @@
++const path = require("path");
++
++/**
++ * @param {string} name name
++ * @param {string} devtool devtool
++ * @returns {import("../../../").Configuration} configuration
++ */
++const base = (name, devtool) => ({
++	mode: "production",
++	devtool,
++	module: {
++		rules: [
++			{
++				test: /chunk/,
++				loader: "babel-loader",
++				options: {}
++			}
++		]
++	},
++	stats: {
++		relatedAssets: true
++	},
++	experiments: {
++		layers: true
++	},
++	entry: {
++		main: {
++			import: "./index",
++			layer: path.resolve(__dirname, name)
++		}
++	},
++	context: path.resolve(__dirname, name),
++	output: {
++		path: path.resolve(
++			__dirname,
++			`../../js/stats/context-independence_oracle/${devtool}-${name}`
++		),
++		filename: "[name]-[chunkhash].js"
++	},
++	resolve: {
++		alias: {
++			c: [
++				path.resolve(__dirname, name, "c"),
++				path.resolve(__dirname, name, "cc")
++			]
++		}
++	}
++});
++
++/** @type {import("../../../").Configuration[]} */
++module.exports = [
++	base("a", "source-map"),
++	base("b", "source-map"),
++	base("a", "eval-source-map"),
++	base("b", "eval-source-map"),
++	base("a", "eval"),
++	base("b", "eval")
++];

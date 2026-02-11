@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(gh issue view:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(copy \"c:\\\\Git\\\\webpack\\\\test\\\\__snapshots__\\\\StatsTestCases.basictest.js.snap\" \"c:\\\\Git\\\\webpack\\\\test\\\\__snapshots__\\\\StatsTestCases.basictest.js_oracle.snap\")",
+      "Bash(git checkout:*)",
+      "Bash(yarn jest:*)",
+      "Bash(find:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(npx eslint:*)",
+      "Bash(git add:*)",
+      "Bash(npx prettier:*)"
+    ]
+  }
+}
