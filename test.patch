@@ -1,3 +1,1977 @@
+diff --git a/.claude/settings.json b/.claude/settings.json
+new file mode 100644
+index 000000000..f95dee237
+--- /dev/null
++++ b/.claude/settings.json
+@@ -0,0 +1,7 @@
++{
++  "permissions": {
++    "allow": [
++      "Bash(git apply:*)"
++    ]
++  }
++}
+diff --git a/.claude/settings.local.json b/.claude/settings.local.json
+new file mode 100644
+index 000000000..c6ce3a7b9
+--- /dev/null
++++ b/.claude/settings.local.json
+@@ -0,0 +1,18 @@
++{
++  "permissions": {
++    "allow": [
++      "Bash(grep:*)",
++      "Bash(gh issue view:*)",
++      "WebFetch(domain:github.com)",
++      "Bash(copy \"c:\\\\Git\\\\webpack\\\\test\\\\__snapshots__\\\\StatsTestCases.basictest.js.snap\" \"c:\\\\Git\\\\webpack\\\\test\\\\__snapshots__\\\\StatsTestCases.basictest.js_oracle.snap\")",
++      "Bash(git checkout:*)",
++      "Bash(yarn jest:*)",
++      "Bash(find:*)",
++      "Bash(git commit:*)",
++      "Bash(git config:*)",
++      "Bash(npx eslint:*)",
++      "Bash(git add:*)",
++      "Bash(npx prettier:*)"
++    ]
++  }
++}
+diff --git a/pr.patch b/pr.patch
+new file mode 100644
+index 000000000..f1a4f1115
+--- /dev/null
++++ b/pr.patch
+@@ -0,0 +1,1156 @@
++diff --git a/lib/ContextModule.js b/lib/ContextModule.js
++index e7170d44b53..abf8ed365ed 100644
++--- a/lib/ContextModule.js
+++++ b/lib/ContextModule.js
++@@ -61,7 +61,7 @@ const makeSerializable = require("./util/makeSerializable");
++ 
++ /**
++  * @typedef {Object} ContextModuleOptionsExtras
++- * @property {string} resource
+++ * @property {false|string|string[]} resource
++  * @property {string=} resourceQuery
++  * @property {string=} resourceFragment
++  * @property {TODO} resolveOptions
++@@ -92,23 +92,36 @@ class ContextModule extends Module {
++ 	 * @param {ContextModuleOptions} options options object
++ 	 */
++ 	constructor(resolveDependencies, options) {
++-		const parsed = parseResource(options ? options.resource : "");
++-		const resource = parsed.path;
++-		const resourceQuery = (options && options.resourceQuery) || parsed.query;
++-		const resourceFragment =
++-			(options && options.resourceFragment) || parsed.fragment;
++-
++-		super("javascript/dynamic", resource);
+++		if (!options || typeof options.resource === "string") {
+++			const parsed = parseResource(
+++				options ? /** @type {string} */ (options.resource) : ""
+++			);
+++			const resource = parsed.path;
+++			const resourceQuery = (options && options.resourceQuery) || parsed.query;
+++			const resourceFragment =
+++				(options && options.resourceFragment) || parsed.fragment;
+++
+++			super("javascript/dynamic", resource);
+++			/** @type {ContextModuleOptions} */
+++			this.options = {
+++				...options,
+++				resource,
+++				resourceQuery,
+++				resourceFragment
+++			};
+++		} else {
+++			super("javascript/dynamic");
+++			/** @type {ContextModuleOptions} */
+++			this.options = {
+++				...options,
+++				resource: options.resource,
+++				resourceQuery: options.resourceQuery || "",
+++				resourceFragment: options.resourceFragment || ""
+++			};
+++		}
++ 
++ 		// Info from Factory
++ 		this.resolveDependencies = resolveDependencies;
++-		/** @type {ContextModuleOptions} */
++-		this.options = {
++-			...options,
++-			resource,
++-			resourceQuery,
++-			resourceFragment
++-		};
++ 		if (options && options.resolveOptions !== undefined) {
++ 			this.resolveOptions = options.resolveOptions;
++ 		}
++@@ -155,7 +168,12 @@ class ContextModule extends Module {
++ 	}
++ 
++ 	_createIdentifier() {
++-		let identifier = this.context;
+++		let identifier =
+++			this.context ||
+++			(typeof this.options.resource === "string" ||
+++			this.options.resource === false
+++				? `${this.options.resource}`
+++				: this.options.resource.join("|"));
++ 		if (this.options.resourceQuery) {
++ 			identifier += `|${this.options.resourceQuery}`;
++ 		}
++@@ -220,7 +238,19 @@ class ContextModule extends Module {
++ 	 * @returns {string} a user readable identifier of the module
++ 	 */
++ 	readableIdentifier(requestShortener) {
++-		let identifier = requestShortener.shorten(this.context) + "/";
+++		let identifier;
+++		if (this.context) {
+++			identifier = requestShortener.shorten(this.context) + "/";
+++		} else if (
+++			typeof this.options.resource === "string" ||
+++			this.options.resource === false
+++		) {
+++			identifier = requestShortener.shorten(`${this.options.resource}`) + "/";
+++		} else {
+++			identifier = this.options.resource
+++				.map(r => requestShortener.shorten(r) + "/")
+++				.join(" ");
+++		}
++ 		if (this.options.resourceQuery) {
++ 			identifier += ` ${this.options.resourceQuery}`;
++ 		}
++@@ -270,11 +300,30 @@ class ContextModule extends Module {
++ 	 * @returns {string | null} an identifier for library inclusion
++ 	 */
++ 	libIdent(options) {
++-		let identifier = contextify(
++-			options.context,
++-			this.context,
++-			options.associatedObjectForCache
++-		);
+++		let identifier;
+++
+++		if (this.context) {
+++			identifier = contextify(
+++				options.context,
+++				this.context,
+++				options.associatedObjectForCache
+++			);
+++		} else if (typeof this.options.resource === "string") {
+++			identifier = contextify(
+++				options.context,
+++				this.options.resource,
+++				options.associatedObjectForCache
+++			);
+++		} else if (this.options.resource === false) {
+++			identifier = "false";
+++		} else {
+++			identifier = this.options.resource
+++				.map(res =>
+++					contextify(options.context, res, options.associatedObjectForCache)
+++				)
+++				.join(" ");
+++		}
+++
++ 		if (this.layer) identifier = `(${this.layer})/${identifier}`;
++ 		if (this.options.mode) {
++ 			identifier += ` ${this.options.mode}`;
++@@ -323,8 +372,9 @@ class ContextModule extends Module {
++ 		// build if enforced
++ 		if (this._forceBuild) return callback(null, true);
++ 
++-		// always build when we have no snapshot
++-		if (!this.buildInfo.snapshot) return callback(null, true);
+++		// always build when we have no snapshot and context
+++		if (!this.buildInfo.snapshot)
+++			return callback(null, Boolean(this.context || this.options.resource));
++ 
++ 		fileSystemInfo.checkSnapshotValid(this.buildInfo.snapshot, (err, valid) => {
++ 			callback(err, !valid);
++@@ -439,10 +489,16 @@ class ContextModule extends Module {
++ 				);
++ 				return;
++ 			}
+++			if (!this.context && !this.options.resource) return callback();
+++
++ 			compilation.fileSystemInfo.createSnapshot(
++ 				startTime,
++ 				null,
++-				[this.context],
+++				this.context
+++					? [this.context]
+++					: typeof this.options.resource === "string"
+++					? [this.options.resource]
+++					: /** @type {string[]} */ (this.options.resource),
++ 				null,
++ 				SNAPSHOT_OPTIONS,
++ 				(err, snapshot) => {
++@@ -466,7 +522,15 @@ class ContextModule extends Module {
++ 		missingDependencies,
++ 		buildDependencies
++ 	) {
++-		contextDependencies.add(this.context);
+++		if (this.context) {
+++			contextDependencies.add(this.context);
+++		} else if (typeof this.options.resource === "string") {
+++			contextDependencies.add(this.options.resource);
+++		} else if (this.options.resource === false) {
+++			return;
+++		} else {
+++			for (const res of this.options.resource) contextDependencies.add(res);
+++		}
++ 	}
++ 
++ 	/**
++diff --git a/lib/ContextModuleFactory.js b/lib/ContextModuleFactory.js
++index f667e11f87f..dac23100a8c 100644
++--- a/lib/ContextModuleFactory.js
+++++ b/lib/ContextModuleFactory.js
++@@ -167,6 +167,9 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
++ 				asyncLib.parallel(
++ 					[
++ 						callback => {
+++							const results = [];
+++							const yield_ = obj => results.push(obj);
+++
++ 							contextResolver.resolve(
++ 								{},
++ 								context,
++@@ -174,11 +177,12 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
++ 								{
++ 									fileDependencies,
++ 									missingDependencies,
++-									contextDependencies
+++									contextDependencies,
+++									yield: yield_
++ 								},
++-								(err, result) => {
+++								err => {
++ 									if (err) return callback(err);
++-									callback(null, result);
+++									callback(null, results);
++ 								}
++ 							);
++ 						},
++@@ -213,15 +217,25 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
++ 								contextDependencies
++ 							});
++ 						}
++-
+++						let [contextResult, loaderResult] = result;
+++						if (contextResult.length > 1) {
+++							const first = contextResult[0];
+++							contextResult = contextResult.filter(r => r.path);
+++							if (contextResult.length === 0) contextResult.push(first);
+++						}
++ 						this.hooks.afterResolve.callAsync(
++ 							{
++ 								addon:
++ 									loadersPrefix +
++-									result[1].join("!") +
++-									(result[1].length > 0 ? "!" : ""),
++-								resource: result[0],
+++									loaderResult.join("!") +
+++									(loaderResult.length > 0 ? "!" : ""),
+++								resource:
+++									contextResult.length > 1
+++										? contextResult.map(r => r.path)
+++										: contextResult[0].path,
++ 								resolveDependencies: this.resolveDependencies.bind(this),
+++								resourceQuery: contextResult[0].query,
+++								resourceFragment: contextResult[0].fragment,
++ 								...beforeResolveResult
++ 							},
++ 							(err, result) => {
++@@ -278,26 +292,28 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
++ 		} = options;
++ 		if (!regExp || !resource) return callback(null, []);
++ 
++-		const addDirectoryChecked = (directory, visited, callback) => {
+++		let severalContexts = false;
+++		const addDirectoryChecked = (ctx, directory, visited, callback) => {
++ 			fs.realpath(directory, (err, realPath) => {
++ 				if (err) return callback(err);
++ 				if (visited.has(realPath)) return callback(null, []);
++ 				let recursionStack;
++ 				addDirectory(
+++					ctx,
++ 					directory,
++-					(dir, callback) => {
+++					(_, dir, callback) => {
++ 						if (recursionStack === undefined) {
++ 							recursionStack = new Set(visited);
++ 							recursionStack.add(realPath);
++ 						}
++-						addDirectoryChecked(dir, recursionStack, callback);
+++						addDirectoryChecked(ctx, dir, recursionStack, callback);
++ 					},
++ 					callback
++ 				);
++ 			});
++ 		};
++ 
++-		const addDirectory = (directory, addSubDirectory, callback) => {
+++		const addDirectory = (ctx, directory, addSubDirectory, callback) => {
++ 			fs.readdir(directory, (err, files) => {
++ 				if (err) return callback(err);
++ 				const processedFiles = cmf.hooks.contextModuleFiles.call(
++@@ -324,16 +340,15 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
++ 
++ 								if (stat.isDirectory()) {
++ 									if (!recursive) return callback();
++-									addSubDirectory(subResource, callback);
+++									addSubDirectory(ctx, subResource, callback);
++ 								} else if (
++ 									stat.isFile() &&
++ 									(!include || subResource.match(include))
++ 								) {
++ 									const obj = {
++-										context: resource,
+++										context: ctx,
++ 										request:
++-											"." +
++-											subResource.substr(resource.length).replace(/\\/g, "/")
+++											"." + subResource.substr(ctx.length).replace(/\\/g, "/")
++ 									};
++ 
++ 									this.hooks.alternativeRequests.callAsync(
++@@ -344,8 +359,11 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
++ 											alternatives = alternatives
++ 												.filter(obj => regExp.test(obj.request))
++ 												.map(obj => {
+++													const request = severalContexts
+++														? join(fs, obj.context, obj.request)
+++														: obj.request;
++ 													const dep = new ContextElementDependency(
++-														obj.request + resourceQuery + resourceFragment,
+++														request + resourceQuery + resourceFragment,
++ 														obj.request,
++ 														typePrefix,
++ 														category,
++@@ -382,12 +400,38 @@ module.exports = class ContextModuleFactory extends ModuleFactory {
++ 			});
++ 		};
++ 
++-		if (typeof fs.realpath === "function") {
++-			addDirectoryChecked(resource, new Set(), callback);
+++		const addSubDirectory = (ctx, dir, callback) =>
+++			addDirectory(ctx, dir, addSubDirectory, callback);
+++
+++		const visitResource = (resource, callback) => {
+++			if (typeof fs.realpath === "function") {
+++				addDirectoryChecked(resource, resource, new Set(), callback);
+++			} else {
+++				addDirectory(resource, resource, addSubDirectory, callback);
+++			}
+++		};
+++
+++		if (typeof resource === "string") {
+++			visitResource(resource, callback);
++ 		} else {
++-			const addSubDirectory = (dir, callback) =>
++-				addDirectory(dir, addSubDirectory, callback);
++-			addDirectory(resource, addSubDirectory, callback);
+++			severalContexts = true;
+++			asyncLib.map(resource, visitResource, (err, result) => {
+++				if (err) return callback(err);
+++
+++				// result dependencies should have unique userRequest
+++				// ordered by resolve result
+++				const temp = new Set();
+++				const res = [];
+++				for (let i = 0; i < result.length; i++) {
+++					const inner = result[i];
+++					for (const el of inner) {
+++						if (temp.has(el.userRequest)) continue;
+++						res.push(el);
+++						temp.add(el.userRequest);
+++					}
+++				}
+++				callback(null, res);
+++			});
++ 		}
++ 	}
++ };
++diff --git a/lib/cache/ResolverCachePlugin.js b/lib/cache/ResolverCachePlugin.js
++index a0c0bbccbdb..f53626b63d0 100644
++--- a/lib/cache/ResolverCachePlugin.js
+++++ b/lib/cache/ResolverCachePlugin.js
++@@ -128,6 +128,13 @@ class ResolverCachePlugin {
++ 				fileDependencies: new LazySet(),
++ 				contextDependencies: new LazySet()
++ 			};
+++			let yieldResult;
+++			let withYield = false;
+++			if (typeof newResolveContext.yield === "function") {
+++				yieldResult = [];
+++				withYield = true;
+++				newResolveContext.yield = obj => yieldResult.push(obj);
+++			}
++ 			const propagate = key => {
++ 				if (resolveContext[key]) {
++ 					addAllToSet(resolveContext[key], newResolveContext[key]);
++@@ -155,15 +162,22 @@ class ResolverCachePlugin {
++ 						snapshotOptions,
++ 						(err, snapshot) => {
++ 							if (err) return callback(err);
+++							const resolveResult = withYield ? yieldResult : result;
+++							// since we intercept resolve hook
+++							// we still can get result in callback
+++							if (withYield && result) yieldResult.push(result);
++ 							if (!snapshot) {
++-								if (result) return callback(null, result);
+++								if (resolveResult) return callback(null, resolveResult);
++ 								return callback();
++ 							}
++-							itemCache.store(new CacheEntry(result, snapshot), storeErr => {
++-								if (storeErr) return callback(storeErr);
++-								if (result) return callback(null, result);
++-								callback();
++-							});
+++							itemCache.store(
+++								new CacheEntry(resolveResult, snapshot),
+++								storeErr => {
+++									if (storeErr) return callback(storeErr);
+++									if (resolveResult) return callback(null, resolveResult);
+++									callback();
+++								}
+++							);
++ 						}
++ 					);
++ 				}
++@@ -173,6 +187,8 @@ class ResolverCachePlugin {
++ 			factory(type, hook) {
++ 				/** @type {Map<string, (function(Error=, Object=): void)[]>} */
++ 				const activeRequests = new Map();
+++				/** @type {Map<string, [function(Error=, Object=): void, function(Error=, Object=): void][]>} */
+++				const activeRequestsWithYield = new Map();
++ 				hook.tap(
++ 					"ResolverCachePlugin",
++ 					/**
++@@ -197,29 +213,67 @@ class ResolverCachePlugin {
++ 								if (request._ResolverCachePluginCacheMiss || !fileSystemInfo) {
++ 									return callback();
++ 								}
++-								const identifier = `${type}${optionsIdent}${objectToString(
++-									request,
++-									!cacheWithContext
++-								)}`;
++-								const activeRequest = activeRequests.get(identifier);
++-								if (activeRequest) {
++-									activeRequest.push(callback);
++-									return;
+++								const withYield = typeof resolveContext.yield === "function";
+++								const identifier = `${type}${
+++									withYield ? "|yield" : "|default"
+++								}${optionsIdent}${objectToString(request, !cacheWithContext)}`;
+++
+++								if (withYield) {
+++									const activeRequest = activeRequestsWithYield.get(identifier);
+++									if (activeRequest) {
+++										activeRequest[0].push(callback);
+++										activeRequest[1].push(resolveContext.yield);
+++										return;
+++									}
+++								} else {
+++									const activeRequest = activeRequests.get(identifier);
+++									if (activeRequest) {
+++										activeRequest.push(callback);
+++										return;
+++									}
++ 								}
++ 								const itemCache = cache.getItemCache(identifier, null);
++-								let callbacks;
++-								const done = (err, result) => {
++-									if (callbacks === undefined) {
++-										callback(err, result);
++-										callbacks = false;
++-									} else {
++-										for (const callback of callbacks) {
++-											callback(err, result);
++-										}
++-										activeRequests.delete(identifier);
++-										callbacks = false;
++-									}
++-								};
+++								let callbacks, yields;
+++								const done = withYield
+++									? (err, result) => {
+++											if (callbacks === undefined) {
+++												if (err) {
+++													callback(err);
+++												} else {
+++													if (result)
+++														for (const r of result) resolveContext.yield(r);
+++													callback(null, null);
+++												}
+++												yields = undefined;
+++												callbacks = false;
+++											} else {
+++												if (err) {
+++													for (const cb of callbacks) cb(err);
+++												} else {
+++													for (let i = 0; i < callbacks.length; i++) {
+++														const cb = callbacks[i];
+++														const yield_ = yields[i];
+++														if (result) for (const r of result) yield_(r);
+++														cb(null, null);
+++													}
+++												}
+++												activeRequestsWithYield.delete(identifier);
+++												yields = undefined;
+++												callbacks = false;
+++											}
+++									  }
+++									: (err, result) => {
+++											if (callbacks === undefined) {
+++												callback(err, result);
+++												callbacks = false;
+++											} else {
+++												for (const callback of callbacks) {
+++													callback(err, result);
+++												}
+++												activeRequests.delete(identifier);
+++												callbacks = false;
+++											}
+++									  };
++ 								/**
++ 								 * @param {Error=} err error if any
++ 								 * @param {CacheEntry=} cacheEntry cache entry
++@@ -276,7 +330,14 @@ class ResolverCachePlugin {
++ 									}
++ 								};
++ 								itemCache.get(processCacheResult);
++-								if (callbacks === undefined) {
+++								if (withYield && callbacks === undefined) {
+++									callbacks = [callback];
+++									yields = [resolveContext.yield];
+++									activeRequestsWithYield.set(
+++										identifier,
+++										/** @type {[any, any]} */ ([callbacks, yields])
+++									);
+++								} else if (callbacks === undefined) {
++ 									callbacks = [callback];
++ 									activeRequests.set(identifier, callbacks);
++ 								}
++diff --git a/package.json b/package.json
++index 9729347d102..175e1e62f33 100644
++--- a/package.json
+++++ b/package.json
++@@ -14,7 +14,7 @@
++     "acorn-import-assertions": "^1.7.6",
++     "browserslist": "^4.14.5",
++     "chrome-trace-event": "^1.0.2",
++-    "enhanced-resolve": "^5.8.3",
+++    "enhanced-resolve": "^5.9.2",
++     "es-module-lexer": "^0.9.0",
++     "eslint-scope": "5.1.1",
++     "events": "^3.2.0",
++diff --git a/test/ContextModule.unittest.js b/test/ContextModule.unittest.js
++index 4d3e691b111..ae3ab350377 100644
++--- a/test/ContextModule.unittest.js
+++++ b/test/ContextModule.unittest.js
++@@ -13,10 +13,13 @@ describe("contextModule", () => {
++ 			contextModule = new ContextModule(() => {}, {
++ 				type: "javascript/auto",
++ 				request,
+++				resource: "a",
++ 				mode: "lazy",
++ 				regExp: /a|b/
++ 			});
++-			expect(contextModule.identifier()).toContain("/a%7Cb/");
+++			expect(contextModule.identifier()).toEqual(
+++				expect.stringContaining("/a%7Cb/")
+++			);
++ 		});
++ 	});
++ });
++diff --git a/test/ContextModuleFactory.unittest.js b/test/ContextModuleFactory.unittest.js
++index 5ecc9bab59f..1f89e611d4f 100644
++--- a/test/ContextModuleFactory.unittest.js
+++++ b/test/ContextModuleFactory.unittest.js
++@@ -119,5 +119,42 @@ describe("ContextModuleFactory", () => {
++ 				}
++ 			);
++ 		});
+++
+++		it("should resolve correctly several resources", done => {
+++			memfs.readdir = (dir, callback) => {
+++				if (dir === "/a") setTimeout(() => callback(null, ["/B"]));
+++				if (dir === "/b") setTimeout(() => callback(null, ["/A"]));
+++				if (dir === "/a/B") setTimeout(() => callback(null, ["a"]));
+++				if (dir === "/b/A") setTimeout(() => callback(null, ["b"]));
+++			};
+++			memfs.stat = (file, callback) => {
+++				const resolvedValue = {
+++					isDirectory: () => file !== "/a/B/a" && file !== "/b/A/b",
+++					isFile: () => file === "/a/B/a" || file === "/b/A/b"
+++				};
+++				setTimeout(() => callback(null, resolvedValue));
+++			};
+++			memfs.realpath = undefined;
+++			factory.resolveDependencies(
+++				memfs,
+++				{
+++					resource: ["/a", "/b"],
+++					resourceFragment: "#hash",
+++					resourceQuery: "?query",
+++					recursive: true,
+++					regExp: /.*/
+++				},
+++				(err, res) => {
+++					expect(res).not.toStrictEqual([]);
+++					expect(Array.isArray(res)).toBe(true);
+++					expect(res.map(r => r.request)).toEqual([
+++						"/a/B/a?query#hash",
+++						"/b/A/b?query#hash"
+++					]);
+++					expect(res.map(r => r.userRequest)).toEqual(["./B/a", "./A/b"]);
+++					done();
+++				}
+++			);
+++		});
++ 	});
++ });
++diff --git a/test/__snapshots__/StatsTestCases.basictest.js.snap b/test/__snapshots__/StatsTestCases.basictest.js.snap
++index 9bec105786e..164ebf13cca 100644
++--- a/test/__snapshots__/StatsTestCases.basictest.js.snap
+++++ b/test/__snapshots__/StatsTestCases.basictest.js.snap
++@@ -737,62 +737,92 @@ exports[`StatsTestCases should print correct stats for concat-and-sideeffects 1`
++ `;
++ 
++ exports[`StatsTestCases should print correct stats for context-independence 1`] = `
++-"asset main-9eb37fb0850a854f8074.js 10.4 KiB [emitted] [immutable] (name: main)
++-  sourceMap main-9eb37fb0850a854f8074.js.map 9.26 KiB [emitted] [dev] (auxiliary name: main)
+++"asset main-1aad2f42f93e93c4e0b4.js 12.7 KiB [emitted] [immutable] (name: main)
+++  sourceMap main-1aad2f42f93e93c4e0b4.js.map 11.1 KiB [emitted] [dev] (auxiliary name: main)
++ asset 695-4dd37417c69a0af66bac.js 455 bytes [emitted] [immutable]
++   sourceMap 695-4dd37417c69a0af66bac.js.map 342 bytes [emitted] [dev]
++-runtime modules 6.29 KiB 8 modules
+++runtime modules 6.6 KiB 9 modules
++ orphan modules 19 bytes [orphan] 1 module
++-cacheable modules 106 bytes
++-  ./a/index.js (in Xdir/context-independence/a) 40 bytes [built] [code generated]
++-  ./a/chunk.js + 1 modules (in Xdir/context-independence/a) 66 bytes [built] [code generated]
+++built modules 500 bytes [built]
+++  modules by layer 234 bytes
+++    ./a/c/ ./a/cc/ eager ^\\\\.\\\\/.*$ namespace object 198 bytes [built] [code generated]
+++    ./a/c/a.js 18 bytes [optional] [built] [code generated]
+++    ./a/cc/b.js 18 bytes [optional] [built] [code generated]
+++  modules by layer (in Xdir/context-independence/a) 266 bytes
+++    ./a/index.js (in Xdir/context-independence/a) 200 bytes [built] [code generated]
+++    ./a/chunk.js + 1 modules (in Xdir/context-independence/a) 66 bytes [built] [code generated]
++ webpack x.x.x compiled successfully in X ms
++ 
++-asset main-9eb37fb0850a854f8074.js 10.4 KiB [emitted] [immutable] (name: main)
++-  sourceMap main-9eb37fb0850a854f8074.js.map 9.26 KiB [emitted] [dev] (auxiliary name: main)
+++asset main-1aad2f42f93e93c4e0b4.js 12.7 KiB [emitted] [immutable] (name: main)
+++  sourceMap main-1aad2f42f93e93c4e0b4.js.map 11.1 KiB [emitted] [dev] (auxiliary name: main)
++ asset 695-4dd37417c69a0af66bac.js 455 bytes [emitted] [immutable]
++   sourceMap 695-4dd37417c69a0af66bac.js.map 342 bytes [emitted] [dev]
++-runtime modules 6.29 KiB 8 modules
+++runtime modules 6.6 KiB 9 modules
++ orphan modules 19 bytes [orphan] 1 module
++-cacheable modules 106 bytes
++-  ./b/index.js (in Xdir/context-independence/b) 40 bytes [built] [code generated]
++-  ./b/chunk.js + 1 modules (in Xdir/context-independence/b) 66 bytes [built] [code generated]
+++built modules 500 bytes [built]
+++  modules by layer 234 bytes
+++    ./b/c/ ./b/cc/ eager ^\\\\.\\\\/.*$ namespace object 198 bytes [built] [code generated]
+++    ./b/c/a.js 18 bytes [optional] [built] [code generated]
+++    ./b/cc/b.js 18 bytes [optional] [built] [code generated]
+++  modules by layer (in Xdir/context-independence/b) 266 bytes
+++    ./b/index.js (in Xdir/context-independence/b) 200 bytes [built] [code generated]
+++    ./b/chunk.js + 1 modules (in Xdir/context-independence/b) 66 bytes [built] [code generated]
++ webpack x.x.x compiled successfully in X ms
++ 
++-asset main-180aaac92930f4aab865.js 11.6 KiB [emitted] [immutable] (name: main)
+++asset main-488feb13e36da3e337fa.js 14.9 KiB [emitted] [immutable] (name: main)
++ asset 695-828eb5c7418e1b8270bb.js 1.5 KiB [emitted] [immutable]
++-runtime modules 6.29 KiB 8 modules
+++runtime modules 6.6 KiB 9 modules
++ orphan modules 19 bytes [orphan] 1 module
++-cacheable modules 106 bytes
++-  ./a/index.js (in Xdir/context-independence/a) 40 bytes [built] [code generated]
++-  ./a/chunk.js + 1 modules (in Xdir/context-independence/a) 66 bytes [built] [code generated]
+++built modules 500 bytes [built]
+++  modules by layer 234 bytes
+++    ./a/c/ ./a/cc/ eager ^\\\\.\\\\/.*$ namespace object 198 bytes [built] [code generated]
+++    ./a/c/a.js 18 bytes [optional] [built] [code generated]
+++    ./a/cc/b.js 18 bytes [optional] [built] [code generated]
+++  modules by layer (in Xdir/context-independence/a) 266 bytes
+++    ./a/index.js (in Xdir/context-independence/a) 200 bytes [built] [code generated]
+++    ./a/chunk.js + 1 modules (in Xdir/context-independence/a) 66 bytes [built] [code generated]
++ webpack x.x.x compiled successfully in X ms
++ 
++-asset main-180aaac92930f4aab865.js 11.6 KiB [emitted] [immutable] (name: main)
+++asset main-488feb13e36da3e337fa.js 14.9 KiB [emitted] [immutable] (name: main)
++ asset 695-828eb5c7418e1b8270bb.js 1.5 KiB [emitted] [immutable]
++-runtime modules 6.29 KiB 8 modules
+++runtime modules 6.6 KiB 9 modules
++ orphan modules 19 bytes [orphan] 1 module
++-cacheable modules 106 bytes
++-  ./b/index.js (in Xdir/context-independence/b) 40 bytes [built] [code generated]
++-  ./b/chunk.js + 1 modules (in Xdir/context-independence/b) 66 bytes [built] [code generated]
+++built modules 500 bytes [built]
+++  modules by layer 234 bytes
+++    ./b/c/ ./b/cc/ eager ^\\\\.\\\\/.*$ namespace object 198 bytes [built] [code generated]
+++    ./b/c/a.js 18 bytes [optional] [built] [code generated]
+++    ./b/cc/b.js 18 bytes [optional] [built] [code generated]
+++  modules by layer (in Xdir/context-independence/b) 266 bytes
+++    ./b/index.js (in Xdir/context-independence/b) 200 bytes [built] [code generated]
+++    ./b/chunk.js + 1 modules (in Xdir/context-independence/b) 66 bytes [built] [code generated]
++ webpack x.x.x compiled successfully in X ms
++ 
++-asset main-633b38bd6be14d7e5f1e.js 11.3 KiB [emitted] [immutable] (name: main)
+++asset main-c96ffcbdb3eefd9ed7c6.js 13.7 KiB [emitted] [immutable] (name: main)
++ asset 695-ace208366ce0ce2556ef.js 1.01 KiB [emitted] [immutable]
++-runtime modules 6.29 KiB 8 modules
+++runtime modules 6.6 KiB 9 modules
++ orphan modules 19 bytes [orphan] 1 module
++-cacheable modules 106 bytes
++-  ./a/index.js (in Xdir/context-independence/a) 40 bytes [built] [code generated]
++-  ./a/chunk.js + 1 modules (in Xdir/context-independence/a) 66 bytes [built] [code generated]
+++built modules 500 bytes [built]
+++  modules by layer 234 bytes
+++    ./a/c/ ./a/cc/ eager ^\\\\.\\\\/.*$ namespace object 198 bytes [built] [code generated]
+++    ./a/c/a.js 18 bytes [optional] [built] [code generated]
+++    ./a/cc/b.js 18 bytes [optional] [built] [code generated]
+++  modules by layer (in Xdir/context-independence/a) 266 bytes
+++    ./a/index.js (in Xdir/context-independence/a) 200 bytes [built] [code generated]
+++    ./a/chunk.js + 1 modules (in Xdir/context-independence/a) 66 bytes [built] [code generated]
++ webpack x.x.x compiled successfully in X ms
++ 
++-asset main-633b38bd6be14d7e5f1e.js 11.3 KiB [emitted] [immutable] (name: main)
+++asset main-c96ffcbdb3eefd9ed7c6.js 13.7 KiB [emitted] [immutable] (name: main)
++ asset 695-ace208366ce0ce2556ef.js 1.01 KiB [emitted] [immutable]
++-runtime modules 6.29 KiB 8 modules
+++runtime modules 6.6 KiB 9 modules
++ orphan modules 19 bytes [orphan] 1 module
++-cacheable modules 106 bytes
++-  ./b/index.js (in Xdir/context-independence/b) 40 bytes [built] [code generated]
++-  ./b/chunk.js + 1 modules (in Xdir/context-independence/b) 66 bytes [built] [code generated]
+++built modules 500 bytes [built]
+++  modules by layer 234 bytes
+++    ./b/c/ ./b/cc/ eager ^\\\\.\\\\/.*$ namespace object 198 bytes [built] [code generated]
+++    ./b/c/a.js 18 bytes [optional] [built] [code generated]
+++    ./b/cc/b.js 18 bytes [optional] [built] [code generated]
+++  modules by layer (in Xdir/context-independence/b) 266 bytes
+++    ./b/index.js (in Xdir/context-independence/b) 200 bytes [built] [code generated]
+++    ./b/chunk.js + 1 modules (in Xdir/context-independence/b) 66 bytes [built] [code generated]
++ webpack x.x.x compiled successfully in X ms"
++ `;
++ 
++diff --git a/test/configCases/resolve/context-resolve-with-ignore/a/foo/a.js b/test/configCases/resolve/context-resolve-with-ignore/a/foo/a.js
++new file mode 100644
++index 00000000000..e94fef18587
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore/a/foo/a.js
++@@ -0,0 +1 @@
+++export default "a";
++diff --git a/test/configCases/resolve/context-resolve-with-ignore/a/foo/package.json b/test/configCases/resolve/context-resolve-with-ignore/a/foo/package.json
++new file mode 100644
++index 00000000000..2f5d9e49074
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore/a/foo/package.json
++@@ -0,0 +1,5 @@
+++{
+++  "name": "foo",
+++  "version": "1.0.0",
+++  "module": "./a.js"
+++}
++diff --git a/test/configCases/resolve/context-resolve-with-ignore/b/foo/b.js b/test/configCases/resolve/context-resolve-with-ignore/b/foo/b.js
++new file mode 100644
++index 00000000000..eff703ff465
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore/b/foo/b.js
++@@ -0,0 +1 @@
+++export default "b";
++diff --git a/test/configCases/resolve/context-resolve-with-ignore/b/foo/package.json b/test/configCases/resolve/context-resolve-with-ignore/b/foo/package.json
++new file mode 100644
++index 00000000000..3a389fbe8dc
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore/b/foo/package.json
++@@ -0,0 +1,5 @@
+++{
+++  "name": "foo",
+++  "version": "1.0.0",
+++  "module": "./b.js"
+++}
++diff --git a/test/configCases/resolve/context-resolve-with-ignore/index.js b/test/configCases/resolve/context-resolve-with-ignore/index.js
++new file mode 100644
++index 00000000000..11b5574fbdd
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore/index.js
++@@ -0,0 +1,7 @@
+++const a = String.fromCharCode("a".charCodeAt(0));
+++const b = String.fromCharCode("b".charCodeAt(0));
+++
+++it("should compile correctly", async () => {
+++	expect((await /* webpackMode: "lazy" */ import(`foo/${a}`)).default).toEqual({});
+++	expect((await /* webpackMode: "lazy" */ import(`foo/${b}`)).default).toBe("b");
+++});
++diff --git a/test/configCases/resolve/context-resolve-with-ignore/webpack.config.js b/test/configCases/resolve/context-resolve-with-ignore/webpack.config.js
++new file mode 100644
++index 00000000000..24884ab1c2e
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore/webpack.config.js
++@@ -0,0 +1,11 @@
+++const path = require("path");
+++
+++/** @type {import("../../../../").Configuration} */
+++module.exports = {
+++	resolve: {
+++		modules: [path.resolve(__dirname, "a"), path.resolve(__dirname, "b")],
+++		alias: {
+++			[path.resolve(__dirname, "a", "foo")]: false
+++		}
+++	}
+++};
++diff --git a/test/configCases/resolve/empty-context-module/index.js b/test/configCases/resolve/empty-context-module/index.js
++new file mode 100644
++index 00000000000..289942993cb
++--- /dev/null
+++++ b/test/configCases/resolve/empty-context-module/index.js
++@@ -0,0 +1,7 @@
+++const id = () => Math.random();
+++
+++it("should compile", async () => {
+++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
+++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
+++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
+++});
++diff --git a/test/configCases/resolve/empty-context-module/webpack.config.js b/test/configCases/resolve/empty-context-module/webpack.config.js
++new file mode 100644
++index 00000000000..bfefc9c737a
++--- /dev/null
+++++ b/test/configCases/resolve/empty-context-module/webpack.config.js
++@@ -0,0 +1,20 @@
+++/** @type {import("../../../../").Configuration[]} */
+++module.exports = [
+++	{
+++		cache: true,
+++		resolve: {
+++			alias: {
+++				foo: false
+++			},
+++			unsafeCache: true
+++		}
+++	},
+++	{
+++		resolve: {
+++			alias: {
+++				foo: false
+++			},
+++			unsafeCache: true
+++		}
+++	}
+++];
++diff --git a/test/configCases/resolve/issue-11335-context-module/index.js b/test/configCases/resolve/issue-11335-context-module/index.js
++new file mode 100644
++index 00000000000..d4784570ea4
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module/index.js
++@@ -0,0 +1,18 @@
+++import a from "app/widgets/a";
+++import b from "app/widgets/b";
+++import c from "app/widgets/c";
+++
+++
+++it("static imports order", () => {
+++	expect(a).toBe("main/widgets/a");
+++	expect(b).toBe("main/widgets/b");
+++	expect(c).toBe("foo/widgets/c");
+++});
+++
+++const load = id => import(/* webpackMode: "eager" */ `app/widgets/${id}?query#hash`);
+++
+++it("dynamic imports order", async () => {
+++	expect((await load("a")).default).toBe("main/widgets/a");
+++	expect((await load("b")).default).toBe("main/widgets/b");
+++	expect((await load("c")).default).toBe("foo/widgets/c");
+++});
++diff --git a/test/configCases/resolve/issue-11335-context-module/src/foo/widgets/b.js b/test/configCases/resolve/issue-11335-context-module/src/foo/widgets/b.js
++new file mode 100644
++index 00000000000..9b6f2974934
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module/src/foo/widgets/b.js
++@@ -0,0 +1 @@
+++export default "foo/widgets/b";
++diff --git a/test/configCases/resolve/issue-11335-context-module/src/foo/widgets/c.js b/test/configCases/resolve/issue-11335-context-module/src/foo/widgets/c.js
++new file mode 100644
++index 00000000000..0de4d4fb702
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module/src/foo/widgets/c.js
++@@ -0,0 +1 @@
+++export default "foo/widgets/c";
++diff --git a/test/configCases/resolve/issue-11335-context-module/src/main/widgets/a.js b/test/configCases/resolve/issue-11335-context-module/src/main/widgets/a.js
++new file mode 100644
++index 00000000000..b6d0dbb4492
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module/src/main/widgets/a.js
++@@ -0,0 +1 @@
+++export default "main/widgets/a";
++diff --git a/test/configCases/resolve/issue-11335-context-module/src/main/widgets/b.js b/test/configCases/resolve/issue-11335-context-module/src/main/widgets/b.js
++new file mode 100644
++index 00000000000..0b8fa8212af
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module/src/main/widgets/b.js
++@@ -0,0 +1 @@
+++export default "main/widgets/b";
++diff --git a/test/configCases/resolve/issue-11335-context-module/webpack.config.js b/test/configCases/resolve/issue-11335-context-module/webpack.config.js
++new file mode 100644
++index 00000000000..d1c50dcaac7
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module/webpack.config.js
++@@ -0,0 +1,10 @@
+++const path = require("path");
+++
+++/** @type {import("../../../../").Configuration} */
+++module.exports = {
+++	resolve: {
+++		alias: {
+++			app: [path.join(__dirname, "src/main"), path.join(__dirname, "src/foo")]
+++		}
+++	}
+++};
++diff --git a/test/statsCases/context-independence/a/c/a.js b/test/statsCases/context-independence/a/c/a.js
++new file mode 100644
++index 00000000000..842e368a0a2
++--- /dev/null
+++++ b/test/statsCases/context-independence/a/c/a.js
++@@ -0,0 +1 @@
+++export default 2;
++diff --git a/test/statsCases/context-independence/a/cc/b.js b/test/statsCases/context-independence/a/cc/b.js
++new file mode 100644
++index 00000000000..aef22247d75
++--- /dev/null
+++++ b/test/statsCases/context-independence/a/cc/b.js
++@@ -0,0 +1 @@
+++export default 1;
++diff --git a/test/statsCases/context-independence/a/index.js b/test/statsCases/context-independence/a/index.js
++index 8881119dd17..82c137c9a63 100644
++--- a/test/statsCases/context-independence/a/index.js
+++++ b/test/statsCases/context-independence/a/index.js
++@@ -1,2 +1,4 @@
++ console.log("test");
++ import("./chunk");
+++const module = Math.round(Math.random() * 100) % 2 === 0 ? "a" : "b";
+++import(/* webpackMode: "eager" */`c/${module}`).then(({ default: d }) => console.log(d));
++diff --git a/test/statsCases/context-independence/b/c/a.js b/test/statsCases/context-independence/b/c/a.js
++new file mode 100644
++index 00000000000..842e368a0a2
++--- /dev/null
+++++ b/test/statsCases/context-independence/b/c/a.js
++@@ -0,0 +1 @@
+++export default 2;
++diff --git a/test/statsCases/context-independence/b/cc/b.js b/test/statsCases/context-independence/b/cc/b.js
++new file mode 100644
++index 00000000000..aef22247d75
++--- /dev/null
+++++ b/test/statsCases/context-independence/b/cc/b.js
++@@ -0,0 +1 @@
+++export default 1;
++diff --git a/test/statsCases/context-independence/b/index.js b/test/statsCases/context-independence/b/index.js
++index 8881119dd17..82c137c9a63 100644
++--- a/test/statsCases/context-independence/b/index.js
+++++ b/test/statsCases/context-independence/b/index.js
++@@ -1,2 +1,4 @@
++ console.log("test");
++ import("./chunk");
+++const module = Math.round(Math.random() * 100) % 2 === 0 ? "a" : "b";
+++import(/* webpackMode: "eager" */`c/${module}`).then(({ default: d }) => console.log(d));
++diff --git a/test/statsCases/context-independence/webpack.config.js b/test/statsCases/context-independence/webpack.config.js
++index a28c4df55ec..4d1b9a68b6d 100644
++--- a/test/statsCases/context-independence/webpack.config.js
+++++ b/test/statsCases/context-independence/webpack.config.js
++@@ -1,8 +1,13 @@
++ const path = require("path");
++ 
++-const base = {
+++/**
+++ * @param {string} name name
+++ * @param {string} devtool devtool
+++ * @returns {import("../../../").Configuration} configuration
+++ */
+++const base = (name, devtool) => ({
++ 	mode: "production",
++-	devtool: "source-map",
+++	devtool,
++ 	module: {
++ 		rules: [
++ 			{
++@@ -17,115 +22,37 @@ const base = {
++ 	},
++ 	experiments: {
++ 		layers: true
++-	}
++-};
++-
++-const base2 = {
++-	...base,
++-	devtool: "eval-source-map"
++-};
++-
++-const base3 = {
++-	...base,
++-	devtool: "eval"
++-};
++-
++-/** @type {import("../../../").Configuration[]} */
++-module.exports = [
++-	{
++-		...base,
++-		entry: {
++-			main: {
++-				import: "./index",
++-				layer: path.resolve(__dirname, "a")
++-			}
++-		},
++-		context: path.resolve(__dirname, "a"),
++-		output: {
++-			path: path.resolve(__dirname, "../../js/stats/context-independence/a"),
++-			filename: "[name]-[chunkhash].js"
++-		}
++ 	},
++-	{
++-		...base,
++-		entry: {
++-			main: {
++-				import: "./index",
++-				layer: path.resolve(__dirname, "b")
++-			}
++-		},
++-		context: path.resolve(__dirname, "b"),
++-		output: {
++-			path: path.resolve(__dirname, "../../js/stats/context-independence/b"),
++-			filename: "[name]-[chunkhash].js"
+++	entry: {
+++		main: {
+++			import: "./index",
+++			layer: path.resolve(__dirname, name)
++ 		}
++ 	},
++-	{
++-		...base2,
++-		entry: {
++-			main: {
++-				import: "./index",
++-				layer: path.resolve(__dirname, "a")
++-			}
++-		},
++-		context: path.resolve(__dirname, "a"),
++-		output: {
++-			path: path.resolve(
++-				__dirname,
++-				"../../js/stats/context-independence/eval-source-map-a"
++-			),
++-			filename: "[name]-[chunkhash].js"
++-		}
+++	context: path.resolve(__dirname, name),
+++	output: {
+++		path: path.resolve(
+++			__dirname,
+++			`../../js/stats/context-independence/${devtool}-${name}`
+++		),
+++		filename: "[name]-[chunkhash].js"
++ 	},
++-	{
++-		...base2,
++-		entry: {
++-			main: {
++-				import: "./index",
++-				layer: path.resolve(__dirname, "b")
++-			}
++-		},
++-		context: path.resolve(__dirname, "b"),
++-		output: {
++-			path: path.resolve(
++-				__dirname,
++-				"../../js/stats/context-independence/eval-source-map-b"
++-			),
++-			filename: "[name]-[chunkhash].js"
++-		}
++-	},
++-	{
++-		...base3,
++-		entry: {
++-			main: {
++-				import: "./index",
++-				layer: path.resolve(__dirname, "a")
++-			}
++-		},
++-		context: path.resolve(__dirname, "a"),
++-		output: {
++-			path: path.resolve(
++-				__dirname,
++-				"../../js/stats/context-independence/eval-a"
++-			),
++-			filename: "[name]-[chunkhash].js"
++-		}
++-	},
++-	{
++-		...base3,
++-		entry: {
++-			main: {
++-				import: "./index",
++-				layer: path.resolve(__dirname, "b")
++-			}
++-		},
++-		context: path.resolve(__dirname, "b"),
++-		output: {
++-			path: path.resolve(
++-				__dirname,
++-				"../../js/stats/context-independence/eval-b"
++-			),
++-			filename: "[name]-[chunkhash].js"
+++	resolve: {
+++		alias: {
+++			c: [
+++				path.resolve(__dirname, name, "c"),
+++				path.resolve(__dirname, name, "cc")
+++			]
++ 		}
++ 	}
+++});
+++
+++/** @type {import("../../../").Configuration[]} */
+++module.exports = [
+++	base("a", "source-map"),
+++	base("b", "source-map"),
+++	base("a", "eval-source-map"),
+++	base("b", "eval-source-map"),
+++	base("a", "eval"),
+++	base("b", "eval")
++ ];
++diff --git a/types.d.ts b/types.d.ts
++index 3b2937c166d..f11b0f5ea13 100644
++--- a/types.d.ts
+++++ b/types.d.ts
++@@ -2526,7 +2526,7 @@ declare interface ContextModuleOptions {
++ 	 * exports referenced from modules (won't be mangled)
++ 	 */
++ 	referencedExports?: string[][];
++-	resource: string;
+++	resource: string | false | string[];
++ 	resourceQuery?: string;
++ 	resourceFragment?: string;
++ 	resolveOptions: any;
++@@ -9405,6 +9405,11 @@ declare interface ResolveContext {
++ 	 * log function
++ 	 */
++ 	log?: (arg0: string) => void;
+++
+++	/**
+++	 * yield result, if provided plugins can return several results
+++	 */
+++	yield?: (arg0: ResolveRequest) => void;
++ }
++ declare interface ResolveData {
++ 	contextInfo: ModuleFactoryCreateDataContextInfo;
++@@ -11851,7 +11856,7 @@ declare interface UserResolveOptions {
++ 	restrictions?: (string | RegExp)[];
++ 
++ 	/**
++-	 * Use only the sync constiants of the file system calls
+++	 * Use only the sync constraints of the file system calls
++ 	 */
++ 	useSyncFileSystemCalls?: boolean;
++ 
++diff --git a/yarn.lock b/yarn.lock
++index eeb0c5ee7bd..7a7f9592696 100644
++--- a/yarn.lock
+++++ b/yarn.lock
++@@ -2259,10 +2259,10 @@ enhanced-resolve@^4.0.0:
++     memory-fs "^0.5.0"
++     tapable "^1.0.0"
++ 
++-enhanced-resolve@^5.8.3:
++-  version "5.8.3"
++-  resolved "https://registry.yarnpkg.com/enhanced-resolve/-/enhanced-resolve-5.8.3.tgz#6d552d465cce0423f5b3d718511ea53826a7b2f0"
++-  integrity sha512-EGAbGvH7j7Xt2nc0E7D99La1OiEs8LnyimkRgwExpUMScN6O+3x9tIWs7PLQZVNx4YD+00skHXPXi1yQHpAmZA==
+++enhanced-resolve@^5.9.2:
+++  version "5.9.2"
+++  resolved "https://registry.yarnpkg.com/enhanced-resolve/-/enhanced-resolve-5.9.2.tgz#0224dcd6a43389ebfb2d55efee517e5466772dd9"
+++  integrity sha512-GIm3fQfwLJ8YZx2smuHpBKkXC1yOk+OBEmKckVyL0i/ea8mqDEykK3ld5dgH1QYPNyT/lIllxV2LULnxCHaHkA==
++   dependencies:
++     graceful-fs "^4.2.4"
++     tapable "^2.2.0"
+diff --git a/test.patch b/test.patch
+new file mode 100644
+index 000000000..846671153
+--- /dev/null
++++ b/test.patch
+@@ -0,0 +1,769 @@
++diff --git a/test/ConfigTestCases_oracle.basictest.js b/test/ConfigTestCases_oracle.basictest.js
++new file mode 100644
++index 000000000..8c8e0933c
++--- /dev/null
+++++ b/test/ConfigTestCases_oracle.basictest.js
++@@ -0,0 +1,5 @@
+++const { describeCases } = require("./ConfigTestCases.template");
+++
+++describeCases({
+++	name: "ConfigTestCases"
+++});
++diff --git a/test/ContextModule.unittest_oracle.js b/test/ContextModule.unittest_oracle.js
++new file mode 100644
++index 000000000..ae3ab3503
++--- /dev/null
+++++ b/test/ContextModule.unittest_oracle.js
++@@ -0,0 +1,25 @@
+++"use strict";
+++
+++const ContextModule = require("../lib/ContextModule");
+++
+++describe("contextModule", () => {
+++	let contextModule;
+++	let request;
+++	beforeEach(() => {
+++		request = "/some/request";
+++	});
+++	describe("#identifier", () => {
+++		it("returns an safe identifier for this module", () => {
+++			contextModule = new ContextModule(() => {}, {
+++				type: "javascript/auto",
+++				request,
+++				resource: "a",
+++				mode: "lazy",
+++				regExp: /a|b/
+++			});
+++			expect(contextModule.identifier()).toEqual(
+++				expect.stringContaining("/a%7Cb/")
+++			);
+++		});
+++	});
+++});
++diff --git a/test/ContextModuleFactory.unittest_oracle.js b/test/ContextModuleFactory.unittest_oracle.js
++new file mode 100644
++index 000000000..1f89e611d
++--- /dev/null
+++++ b/test/ContextModuleFactory.unittest_oracle.js
++@@ -0,0 +1,160 @@
+++"use strict";
+++
+++const { createFsFromVolume, Volume } = require("memfs");
+++const ContextModuleFactory = require("../lib/ContextModuleFactory");
+++
+++describe("ContextModuleFactory", () => {
+++	describe("resolveDependencies", () => {
+++		let factory, memfs;
+++		beforeEach(() => {
+++			factory = new ContextModuleFactory([]);
+++			memfs = createFsFromVolume(new Volume());
+++		});
+++		it("should not report an error when ENOENT errors happen", done => {
+++			memfs.readdir = (dir, callback) => {
+++				setTimeout(() => callback(null, ["/file"]));
+++			};
+++			memfs.stat = (file, callback) => {
+++				let err = new Error("fake ENOENT error");
+++				err.code = "ENOENT";
+++				setTimeout(() => callback(err, null));
+++			};
+++			factory.resolveDependencies(
+++				memfs,
+++				{
+++					resource: "/",
+++					recursive: true,
+++					regExp: /.*/
+++				},
+++				(err, res) => {
+++					expect(err).toBeFalsy();
+++					expect(Array.isArray(res)).toBe(true);
+++					expect(res.length).toBe(0);
+++					done();
+++				}
+++			);
+++		});
+++		it("should report an error when non-ENOENT errors happen", done => {
+++			memfs.readdir = (dir, callback) => {
+++				setTimeout(() => callback(null, ["/file"]));
+++			};
+++			memfs.stat = (file, callback) => {
+++				let err = new Error("fake EACCES error");
+++				err.code = "EACCES";
+++				setTimeout(() => callback(err, null));
+++			};
+++			factory.resolveDependencies(
+++				memfs,
+++				{
+++					resource: "/",
+++					recursive: true,
+++					regExp: /.*/
+++				},
+++				(err, res) => {
+++					expect(err).toBeInstanceOf(Error);
+++					expect(res).toBeFalsy();
+++					done();
+++				}
+++			);
+++		});
+++		it("should return callback with [] if circular symlinks exist", done => {
+++			let statDirStatus = 0;
+++			memfs.readdir = (dir, callback) => {
+++				statDirStatus++;
+++				setTimeout(() => callback(null, ["/A"]));
+++			};
+++			memfs.stat = (file, callback) => {
+++				const resolvedValue = {
+++					isDirectory: () => statDirStatus === 1,
+++					isFile: () => statDirStatus !== 1
+++				};
+++				setTimeout(() => callback(null, resolvedValue));
+++			};
+++			memfs.realpath = (dir, callback) => {
+++				const realPath = dir.split("/");
+++				setTimeout(() => callback(null, realPath[realPath.length - 1]));
+++			};
+++			factory.resolveDependencies(
+++				memfs,
+++				{
+++					resource: "/A",
+++					recursive: true,
+++					regExp: /.*/
+++				},
+++				(err, res) => {
+++					expect(res).toStrictEqual([]);
+++					done();
+++				}
+++			);
+++		});
+++		it("should not return callback with [] if there are no circular symlinks", done => {
+++			let statDirStatus = 0;
+++			memfs.readdir = (dir, callback) => {
+++				statDirStatus++;
+++				setTimeout(() => callback(null, ["/B"]));
+++			};
+++			memfs.stat = (file, callback) => {
+++				const resolvedValue = {
+++					isDirectory: () => statDirStatus === 1,
+++					isFile: () => statDirStatus !== 1
+++				};
+++				setTimeout(() => callback(null, resolvedValue));
+++			};
+++			memfs.realpath = (dir, callback) => {
+++				const realPath = dir.split("/");
+++				setTimeout(() => callback(null, realPath[realPath.length - 1]));
+++			};
+++			factory.resolveDependencies(
+++				memfs,
+++				{
+++					resource: "/A",
+++					recursive: true,
+++					regExp: /.*/
+++				},
+++				(err, res) => {
+++					expect(res).not.toStrictEqual([]);
+++					expect(Array.isArray(res)).toBe(true);
+++					expect(res.length).toBe(1);
+++					done();
+++				}
+++			);
+++		});
+++
+++		it("should resolve correctly several resources", done => {
+++			memfs.readdir = (dir, callback) => {
+++				if (dir === "/a") setTimeout(() => callback(null, ["/B"]));
+++				if (dir === "/b") setTimeout(() => callback(null, ["/A"]));
+++				if (dir === "/a/B") setTimeout(() => callback(null, ["a"]));
+++				if (dir === "/b/A") setTimeout(() => callback(null, ["b"]));
+++			};
+++			memfs.stat = (file, callback) => {
+++				const resolvedValue = {
+++					isDirectory: () => file !== "/a/B/a" && file !== "/b/A/b",
+++					isFile: () => file === "/a/B/a" || file === "/b/A/b"
+++				};
+++				setTimeout(() => callback(null, resolvedValue));
+++			};
+++			memfs.realpath = undefined;
+++			factory.resolveDependencies(
+++				memfs,
+++				{
+++					resource: ["/a", "/b"],
+++					resourceFragment: "#hash",
+++					resourceQuery: "?query",
+++					recursive: true,
+++					regExp: /.*/
+++				},
+++				(err, res) => {
+++					expect(res).not.toStrictEqual([]);
+++					expect(Array.isArray(res)).toBe(true);
+++					expect(res.map(r => r.request)).toEqual([
+++						"/a/B/a?query#hash",
+++						"/b/A/b?query#hash"
+++					]);
+++					expect(res.map(r => r.userRequest)).toEqual(["./B/a", "./A/b"]);
+++					done();
+++				}
+++			);
+++		});
+++	});
+++});
++diff --git a/test/StatsTestCases_oracle.basictest.js b/test/StatsTestCases_oracle.basictest.js
++new file mode 100644
++index 000000000..1800ad70e
++--- /dev/null
+++++ b/test/StatsTestCases_oracle.basictest.js
++@@ -0,0 +1,201 @@
+++"use strict";
+++
+++require("./helpers/warmup-webpack");
+++const path = require("path");
+++const fs = require("graceful-fs");
+++const rimraf = require("rimraf");
+++const captureStdio = require("./helpers/captureStdio");
+++const webpack = require("..");
+++
+++/**
+++ * Escapes regular expression metacharacters
+++ * @param {string} str String to quote
+++ * @returns {string} Escaped string
+++ */
+++const quoteMeta = str => {
+++	return str.replace(/[-[\]\\/{}()*+?.^$|]/g, "\\$&");
+++};
+++
+++const base = path.join(__dirname, "statsCases");
+++const outputBase = path.join(__dirname, "js", "stats");
+++const tests = fs
+++	.readdirSync(base)
+++	.filter(
+++		testName =>
+++			fs.existsSync(path.join(base, testName, "index.js")) ||
+++			fs.existsSync(path.join(base, testName, "webpack.config.js"))
+++	)
+++	.filter(testName => {
+++		const testDirectory = path.join(base, testName);
+++		const filterPath = path.join(testDirectory, "test.filter.js");
+++		if (fs.existsSync(filterPath) && !require(filterPath)()) {
+++			describe.skip(testName, () => it("filtered"));
+++			return false;
+++		}
+++		return true;
+++	});
+++
+++describe("StatsTestCases", () => {
+++	jest.setTimeout(30000);
+++	let stderr;
+++	beforeEach(() => {
+++		stderr = captureStdio(process.stderr, true);
+++	});
+++	afterEach(() => {
+++		stderr.restore();
+++	});
+++	tests.forEach(testName => {
+++		it("should print correct stats for " + testName, done => {
+++			const outputDirectory = path.join(outputBase, testName);
+++			rimraf.sync(outputDirectory);
+++			fs.mkdirSync(outputDirectory, { recursive: true });
+++			let options = {
+++				mode: "development",
+++				entry: "./index",
+++				output: {
+++					filename: "bundle.js"
+++				}
+++			};
+++			if (fs.existsSync(path.join(base, testName, "webpack.config.js"))) {
+++				options = require(path.join(base, testName, "webpack.config.js"));
+++			}
+++			let testConfig = {};
+++			try {
+++				// try to load a test file
+++				testConfig = Object.assign(
+++					testConfig,
+++					require(path.join(base, testName, "test.config.js"))
+++				);
+++			} catch (e) {
+++				// ignored
+++			}
+++
+++			(Array.isArray(options) ? options : [options]).forEach(options => {
+++				if (!options.context) options.context = path.join(base, testName);
+++				if (!options.output) options.output = options.output || {};
+++				if (!options.output.path) options.output.path = outputDirectory;
+++				if (!options.plugins) options.plugins = [];
+++				if (!options.optimization) options.optimization = {};
+++				if (options.optimization.minimize === undefined)
+++					options.optimization.minimize = false;
+++			});
+++			const c = webpack(options);
+++			const compilers = c.compilers ? c.compilers : [c];
+++			compilers.forEach(c => {
+++				const ifs = c.inputFileSystem;
+++				c.inputFileSystem = Object.create(ifs);
+++				c.inputFileSystem.readFile = function () {
+++					const args = Array.prototype.slice.call(arguments);
+++					const callback = args.pop();
+++					ifs.readFile.apply(
+++						ifs,
+++						args.concat([
+++							(err, result) => {
+++								if (err) return callback(err);
+++								if (!/\.(js|json|txt)$/.test(args[0]))
+++									return callback(null, result);
+++								callback(null, result.toString("utf-8").replace(/\r/g, ""));
+++							}
+++						])
+++					);
+++				};
+++				c.hooks.compilation.tap("StatsTestCasesTest", compilation => {
+++					[
+++						"optimize",
+++						"optimizeModules",
+++						"optimizeChunks",
+++						"afterOptimizeTree",
+++						"afterOptimizeAssets",
+++						"beforeHash"
+++					].forEach(hook => {
+++						compilation.hooks[hook].tap("TestCasesTest", () =>
+++							compilation.checkConstraints()
+++						);
+++					});
+++				});
+++			});
+++			c.run((err, stats) => {
+++				if (err) return done(err);
+++				for (const compilation of []
+++					.concat(stats.stats || stats)
+++					.map(s => s.compilation)) {
+++					compilation.logging.delete("webpack.Compilation.ModuleProfile");
+++				}
+++				if (/error$/.test(testName)) {
+++					expect(stats.hasErrors()).toBe(true);
+++				} else if (stats.hasErrors()) {
+++					return done(
+++						new Error(
+++							stats.toString({
+++								all: false,
+++								errors: true,
+++								errorStack: true,
+++								errorDetails: true
+++							})
+++						)
+++					);
+++				} else {
+++					fs.writeFileSync(
+++						path.join(outputBase, testName, "stats.txt"),
+++						stats.toString({
+++							preset: "verbose",
+++							context: path.join(base, testName),
+++							colors: false
+++						}),
+++						"utf-8"
+++					);
+++				}
+++				let toStringOptions = {
+++					context: path.join(base, testName),
+++					colors: false
+++				};
+++				let hasColorSetting = false;
+++				if (typeof c.options.stats !== "undefined") {
+++					toStringOptions = c.options.stats;
+++					if (toStringOptions === null || typeof toStringOptions !== "object")
+++						toStringOptions = { preset: toStringOptions };
+++					if (!toStringOptions.context)
+++						toStringOptions.context = path.join(base, testName);
+++					hasColorSetting = typeof toStringOptions.colors !== "undefined";
+++				}
+++				if (Array.isArray(c.options) && !toStringOptions.children) {
+++					toStringOptions.children = c.options.map(o => o.stats);
+++				}
+++				// mock timestamps
+++				for (const { compilation: s } of [].concat(stats.stats || stats)) {
+++					expect(s.startTime).toBeGreaterThan(0);
+++					expect(s.endTime).toBeGreaterThan(0);
+++					s.endTime = new Date("04/20/1970, 12:42:42 PM").getTime();
+++					s.startTime = s.endTime - 1234;
+++				}
+++				let actual = stats.toString(toStringOptions);
+++				expect(typeof actual).toBe("string");
+++				if (!hasColorSetting) {
+++					actual = stderr.toString() + actual;
+++					actual = actual
+++						.replace(/\u001b\[[0-9;]*m/g, "")
+++						.replace(/[.0-9]+(\s?ms)/g, "X$1");
+++				} else {
+++					actual = stderr.toStringRaw() + actual;
+++					actual = actual
+++						.replace(/\u001b\[1m\u001b\[([0-9;]*)m/g, "<CLR=$1,BOLD>")
+++						.replace(/\u001b\[1m/g, "<CLR=BOLD>")
+++						.replace(/\u001b\[39m\u001b\[22m/g, "</CLR>")
+++						.replace(/\u001b\[([0-9;]*)m/g, "<CLR=$1>")
+++						.replace(/[.0-9]+(<\/CLR>)?(\s?ms)/g, "X$1$2");
+++				}
+++				// cspell:ignore Xdir
+++				const testPath = path.join(base, testName);
+++				actual = actual
+++					.replace(/\r\n?/g, "\n")
+++					.replace(/webpack [^ )]+(\)?) compiled/g, "webpack x.x.x$1 compiled")
+++					.replace(new RegExp(quoteMeta(testPath), "g"), "Xdir/" + testName)
+++					.replace(/(\w)\\(\w)/g, "$1/$2")
+++					.replace(/, additional resolving: X ms/g, "");
+++				expect(actual).toMatchSnapshot();
+++				if (testConfig.validate) testConfig.validate(stats, stderr.toString());
+++				done();
+++			});
+++		});
+++	});
+++});
++diff --git a/test/TestCasesNormal_oracle.basictest.js b/test/TestCasesNormal_oracle.basictest.js
++new file mode 100644
++index 000000000..9d975ad28
++--- /dev/null
+++++ b/test/TestCasesNormal_oracle.basictest.js
++@@ -0,0 +1,7 @@
+++const { describeCases } = require("./TestCases.template");
+++
+++describe("TestCases", () => {
+++	describeCases({
+++		name: "normal"
+++	});
+++});
++diff --git a/test/WatchTestCases_oracle.longtest.js b/test/WatchTestCases_oracle.longtest.js
++new file mode 100644
++index 000000000..14de99b42
++--- /dev/null
+++++ b/test/WatchTestCases_oracle.longtest.js
++@@ -0,0 +1,5 @@
+++const { describeCases } = require("./WatchTestCases.template");
+++
+++describeCases({
+++	name: "WatchTestCases"
+++});
++diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/a.js b/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/a.js
++new file mode 100644
++index 000000000..e94fef185
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/a.js
++@@ -0,0 +1 @@
+++export default "a";
++diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/package.json b/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/package.json
++new file mode 100644
++index 000000000..2f5d9e490
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/a/foo/package.json
++@@ -0,0 +1,5 @@
+++{
+++  "name": "foo",
+++  "version": "1.0.0",
+++  "module": "./a.js"
+++}
++diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/b.js b/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/b.js
++new file mode 100644
++index 000000000..eff703ff4
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/b.js
++@@ -0,0 +1 @@
+++export default "b";
++diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/package.json b/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/package.json
++new file mode 100644
++index 000000000..3a389fbe8
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/b/foo/package.json
++@@ -0,0 +1,5 @@
+++{
+++  "name": "foo",
+++  "version": "1.0.0",
+++  "module": "./b.js"
+++}
++diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/index.js b/test/configCases/resolve/context-resolve-with-ignore_oracle/index.js
++new file mode 100644
++index 000000000..11b5574fb
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/index.js
++@@ -0,0 +1,7 @@
+++const a = String.fromCharCode("a".charCodeAt(0));
+++const b = String.fromCharCode("b".charCodeAt(0));
+++
+++it("should compile correctly", async () => {
+++	expect((await /* webpackMode: "lazy" */ import(`foo/${a}`)).default).toEqual({});
+++	expect((await /* webpackMode: "lazy" */ import(`foo/${b}`)).default).toBe("b");
+++});
++diff --git a/test/configCases/resolve/context-resolve-with-ignore_oracle/webpack.config.js b/test/configCases/resolve/context-resolve-with-ignore_oracle/webpack.config.js
++new file mode 100644
++index 000000000..24884ab1c
++--- /dev/null
+++++ b/test/configCases/resolve/context-resolve-with-ignore_oracle/webpack.config.js
++@@ -0,0 +1,11 @@
+++const path = require("path");
+++
+++/** @type {import("../../../../").Configuration} */
+++module.exports = {
+++	resolve: {
+++		modules: [path.resolve(__dirname, "a"), path.resolve(__dirname, "b")],
+++		alias: {
+++			[path.resolve(__dirname, "a", "foo")]: false
+++		}
+++	}
+++};
++diff --git a/test/configCases/resolve/empty-context-module_oracle/index.js b/test/configCases/resolve/empty-context-module_oracle/index.js
++new file mode 100644
++index 000000000..289942993
++--- /dev/null
+++++ b/test/configCases/resolve/empty-context-module_oracle/index.js
++@@ -0,0 +1,7 @@
+++const id = () => Math.random();
+++
+++it("should compile", async () => {
+++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
+++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
+++	await expect(/* webpackMode: "lazy" */ import(`foo/${id()}`)).rejects.toBeTruthy();
+++});
++diff --git a/test/configCases/resolve/empty-context-module_oracle/webpack.config.js b/test/configCases/resolve/empty-context-module_oracle/webpack.config.js
++new file mode 100644
++index 000000000..bfefc9c73
++--- /dev/null
+++++ b/test/configCases/resolve/empty-context-module_oracle/webpack.config.js
++@@ -0,0 +1,20 @@
+++/** @type {import("../../../../").Configuration[]} */
+++module.exports = [
+++	{
+++		cache: true,
+++		resolve: {
+++			alias: {
+++				foo: false
+++			},
+++			unsafeCache: true
+++		}
+++	},
+++	{
+++		resolve: {
+++			alias: {
+++				foo: false
+++			},
+++			unsafeCache: true
+++		}
+++	}
+++];
++diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/index.js b/test/configCases/resolve/issue-11335-context-module_oracle/index.js
++new file mode 100644
++index 000000000..d4784570e
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module_oracle/index.js
++@@ -0,0 +1,18 @@
+++import a from "app/widgets/a";
+++import b from "app/widgets/b";
+++import c from "app/widgets/c";
+++
+++
+++it("static imports order", () => {
+++	expect(a).toBe("main/widgets/a");
+++	expect(b).toBe("main/widgets/b");
+++	expect(c).toBe("foo/widgets/c");
+++});
+++
+++const load = id => import(/* webpackMode: "eager" */ `app/widgets/${id}?query#hash`);
+++
+++it("dynamic imports order", async () => {
+++	expect((await load("a")).default).toBe("main/widgets/a");
+++	expect((await load("b")).default).toBe("main/widgets/b");
+++	expect((await load("c")).default).toBe("foo/widgets/c");
+++});
++diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/b.js b/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/b.js
++new file mode 100644
++index 000000000..9b6f29749
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/b.js
++@@ -0,0 +1 @@
+++export default "foo/widgets/b";
++diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/c.js b/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/c.js
++new file mode 100644
++index 000000000..0de4d4fb7
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module_oracle/src/foo/widgets/c.js
++@@ -0,0 +1 @@
+++export default "foo/widgets/c";
++diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/a.js b/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/a.js
++new file mode 100644
++index 000000000..b6d0dbb44
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/a.js
++@@ -0,0 +1 @@
+++export default "main/widgets/a";
++diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/b.js b/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/b.js
++new file mode 100644
++index 000000000..0b8fa8212
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module_oracle/src/main/widgets/b.js
++@@ -0,0 +1 @@
+++export default "main/widgets/b";
++diff --git a/test/configCases/resolve/issue-11335-context-module_oracle/webpack.config.js b/test/configCases/resolve/issue-11335-context-module_oracle/webpack.config.js
++new file mode 100644
++index 000000000..d1c50dcaa
++--- /dev/null
+++++ b/test/configCases/resolve/issue-11335-context-module_oracle/webpack.config.js
++@@ -0,0 +1,10 @@
+++const path = require("path");
+++
+++/** @type {import("../../../../").Configuration} */
+++module.exports = {
+++	resolve: {
+++		alias: {
+++			app: [path.join(__dirname, "src/main"), path.join(__dirname, "src/foo")]
+++		}
+++	}
+++};
++diff --git a/test/statsCases/context-independence_oracle/a/c/a.js b/test/statsCases/context-independence_oracle/a/c/a.js
++new file mode 100644
++index 000000000..842e368a0
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/a/c/a.js
++@@ -0,0 +1 @@
+++export default 2;
++diff --git a/test/statsCases/context-independence_oracle/a/cc/b.js b/test/statsCases/context-independence_oracle/a/cc/b.js
++new file mode 100644
++index 000000000..aef22247d
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/a/cc/b.js
++@@ -0,0 +1 @@
+++export default 1;
++diff --git a/test/statsCases/context-independence_oracle/a/chunk.js b/test/statsCases/context-independence_oracle/a/chunk.js
++new file mode 100644
++index 000000000..a1aa81e2f
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/a/chunk.js
++@@ -0,0 +1,2 @@
+++import test from "./module";
+++console.log(test);
++diff --git a/test/statsCases/context-independence_oracle/a/index.js b/test/statsCases/context-independence_oracle/a/index.js
++new file mode 100644
++index 000000000..82c137c9a
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/a/index.js
++@@ -0,0 +1,4 @@
+++console.log("test");
+++import("./chunk");
+++const module = Math.round(Math.random() * 100) % 2 === 0 ? "a" : "b";
+++import(/* webpackMode: "eager" */`c/${module}`).then(({ default: d }) => console.log(d));
++diff --git a/test/statsCases/context-independence_oracle/a/module.js b/test/statsCases/context-independence_oracle/a/module.js
++new file mode 100644
++index 000000000..7a4e8a723
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/a/module.js
++@@ -0,0 +1 @@
+++export default 42;
++diff --git a/test/statsCases/context-independence_oracle/b/c/a.js b/test/statsCases/context-independence_oracle/b/c/a.js
++new file mode 100644
++index 000000000..842e368a0
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/b/c/a.js
++@@ -0,0 +1 @@
+++export default 2;
++diff --git a/test/statsCases/context-independence_oracle/b/cc/b.js b/test/statsCases/context-independence_oracle/b/cc/b.js
++new file mode 100644
++index 000000000..aef22247d
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/b/cc/b.js
++@@ -0,0 +1 @@
+++export default 1;
++diff --git a/test/statsCases/context-independence_oracle/b/chunk.js b/test/statsCases/context-independence_oracle/b/chunk.js
++new file mode 100644
++index 000000000..a1aa81e2f
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/b/chunk.js
++@@ -0,0 +1,2 @@
+++import test from "./module";
+++console.log(test);
++diff --git a/test/statsCases/context-independence_oracle/b/index.js b/test/statsCases/context-independence_oracle/b/index.js
++new file mode 100644
++index 000000000..82c137c9a
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/b/index.js
++@@ -0,0 +1,4 @@
+++console.log("test");
+++import("./chunk");
+++const module = Math.round(Math.random() * 100) % 2 === 0 ? "a" : "b";
+++import(/* webpackMode: "eager" */`c/${module}`).then(({ default: d }) => console.log(d));
++diff --git a/test/statsCases/context-independence_oracle/b/module.js b/test/statsCases/context-independence_oracle/b/module.js
++new file mode 100644
++index 000000000..7a4e8a723
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/b/module.js
++@@ -0,0 +1 @@
+++export default 42;
++diff --git a/test/statsCases/context-independence_oracle/test.config.js b/test/statsCases/context-independence_oracle/test.config.js
++new file mode 100644
++index 000000000..305c9bb31
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/test.config.js
++@@ -0,0 +1,9 @@
+++module.exports = {
+++	validate(stats) {
+++		for (let i = 0; i < stats.stats.length; i += 2) {
+++			const a = stats.stats[i].compilation.hash;
+++			const b = stats.stats[i + 1].compilation.hash;
+++			expect(a).toBe(b);
+++		}
+++	}
+++};
++diff --git a/test/statsCases/context-independence_oracle/webpack.config.js b/test/statsCases/context-independence_oracle/webpack.config.js
++new file mode 100644
++index 000000000..98b51ca0e
++--- /dev/null
+++++ b/test/statsCases/context-independence_oracle/webpack.config.js
++@@ -0,0 +1,58 @@
+++const path = require("path");
+++
+++/**
+++ * @param {string} name name
+++ * @param {string} devtool devtool
+++ * @returns {import("../../../").Configuration} configuration
+++ */
+++const base = (name, devtool) => ({
+++	mode: "production",
+++	devtool,
+++	module: {
+++		rules: [
+++			{
+++				test: /chunk/,
+++				loader: "babel-loader",
+++				options: {}
+++			}
+++		]
+++	},
+++	stats: {
+++		relatedAssets: true
+++	},
+++	experiments: {
+++		layers: true
+++	},
+++	entry: {
+++		main: {
+++			import: "./index",
+++			layer: path.resolve(__dirname, name)
+++		}
+++	},
+++	context: path.resolve(__dirname, name),
+++	output: {
+++		path: path.resolve(
+++			__dirname,
+++			`../../js/stats/context-independence_oracle/${devtool}-${name}`
+++		),
+++		filename: "[name]-[chunkhash].js"
+++	},
+++	resolve: {
+++		alias: {
+++			c: [
+++				path.resolve(__dirname, name, "c"),
+++				path.resolve(__dirname, name, "cc")
+++			]
+++		}
+++	}
+++});
+++
+++/** @type {import("../../../").Configuration[]} */
+++module.exports = [
+++	base("a", "source-map"),
+++	base("b", "source-map"),
+++	base("a", "eval-source-map"),
+++	base("b", "eval-source-map"),
+++	base("a", "eval"),
+++	base("b", "eval")
+++];
 diff --git a/test/ConfigTestCases_oracle.basictest.js b/test/ConfigTestCases_oracle.basictest.js
 new file mode 100644
 index 000000000..8c8e0933c
@@ -9,42 +1983,11 @@ index 000000000..8c8e0933c
 +describeCases({
 +	name: "ConfigTestCases"
 +});
-diff --git a/test/ContextModule.unittest_oracle.js b/test/ContextModule.unittest_oracle.js
-new file mode 100644
-index 000000000..ae3ab3503
---- /dev/null
-+++ b/test/ContextModule.unittest_oracle.js
-@@ -0,0 +1,25 @@
-+"use strict";
-+
-+const ContextModule = require("../lib/ContextModule");
-+
-+describe("contextModule", () => {
-+	let contextModule;
-+	let request;
-+	beforeEach(() => {
-+		request = "/some/request";
-+	});
-+	describe("#identifier", () => {
-+		it("returns an safe identifier for this module", () => {
-+			contextModule = new ContextModule(() => {}, {
-+				type: "javascript/auto",
-+				request,
-+				resource: "a",
-+				mode: "lazy",
-+				regExp: /a|b/
-+			});
-+			expect(contextModule.identifier()).toEqual(
-+				expect.stringContaining("/a%7Cb/")
-+			);
-+		});
-+	});
-+});
-diff --git a/test/ContextModuleFactory.unittest_oracle.js b/test/ContextModuleFactory.unittest_oracle.js
+diff --git a/test/ContextModuleFactory_oracle.unittest.js b/test/ContextModuleFactory_oracle.unittest.js
 new file mode 100644
 index 000000000..1f89e611d
 --- /dev/null
-+++ b/test/ContextModuleFactory.unittest_oracle.js
++++ b/test/ContextModuleFactory_oracle.unittest.js
 @@ -0,0 +1,160 @@
 +"use strict";
 +
@@ -202,6 +2145,37 @@ index 000000000..1f89e611d
 +					expect(res.map(r => r.userRequest)).toEqual(["./B/a", "./A/b"]);
 +					done();
 +				}
++			);
++		});
++	});
++});
+diff --git a/test/ContextModule_oracle.unittest.js b/test/ContextModule_oracle.unittest.js
+new file mode 100644
+index 000000000..ae3ab3503
+--- /dev/null
++++ b/test/ContextModule_oracle.unittest.js
+@@ -0,0 +1,25 @@
++"use strict";
++
++const ContextModule = require("../lib/ContextModule");
++
++describe("contextModule", () => {
++	let contextModule;
++	let request;
++	beforeEach(() => {
++		request = "/some/request";
++	});
++	describe("#identifier", () => {
++		it("returns an safe identifier for this module", () => {
++			contextModule = new ContextModule(() => {}, {
++				type: "javascript/auto",
++				request,
++				resource: "a",
++				mode: "lazy",
++				regExp: /a|b/
++			});
++			expect(contextModule.identifier()).toEqual(
++				expect.stringContaining("/a%7Cb/")
 +			);
 +		});
 +	});
